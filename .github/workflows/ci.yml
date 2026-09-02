@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The one failure mode this architecture introduces: someone edits src/
+      # and forgets to rebuild, so the file users download is stale.
+      - name: Built scripts match src/
+        run: ./build.sh --check
+
+      - name: Smoke tests
+        run: ./tests/smoke.sh
+
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          ./build.sh --lint

@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+#
+# tests/smoke.sh — what can be checked without a Proxmox host.
+#
+# It cannot verify that a container actually boots; it can verify that every
+# built script parses, that its embedded in-container agent parses, that help
+# works, that the dispatcher rejects nonsense, and that the committed scripts
+# still match src/. That covers the failure mode that actually bites: a build
+# or quoting mistake that only shows up after you've already pasted the
+# one-liner into a PVE shell.
+
+# Deliberately no `set -e`: this suite runs commands that are *supposed* to
+# fail, and needs to inspect their exit codes rather than die on them.
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PASS=0
+FAIL=0
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+pass() { printf '  \033[32mok\033[0m   %s\n' "$1"; PASS=$(( PASS + 1 )); }
+fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; FAIL=$(( FAIL + 1 )); }
+check() { if [[ "$1" -eq 0 ]]; then pass "$2"; else fail "$2"; fi; }
+
+# Sourcing a built script would run it; drop the final `pvs_main "$@"` line so
+# its functions can be poked at in isolation.
+loadable() {
+  local script="$1" out="$TMP/loadable.sh"
+  sed '$d' "$script" > "$out"
+  printf '%s' "$out"
+}
+
+printf '\nBuild is current\n'
+"$ROOT/build.sh" --check >/dev/null 2>&1
+check $? "committed scripts match src/"
+
+printf '\nBuilt scripts\n'
+shopt -s nullglob
+scripts=( "$ROOT"/ct-lxc/*.sh "$ROOT"/vm/*.sh "$ROOT"/misc/*.sh )
+if [[ ${#scripts[@]} -eq 0 ]]; then
+  fail "no built scripts found — run ./build.sh"
+fi
+
+for script in ${scripts[@]+"${scripts[@]}"}; do
+  name="$(basename "$script")"
+
+  bash -n "$script" 2>/dev/null
+  check $? "$name parses"
+
+  [[ -x "$script" ]]
+  check $? "$name is executable"
+
+  # Help must work with no Proxmox anywhere in sight.
+  rc=0; "$script" --help >"$TMP/help.txt" 2>&1 || rc=$?
+  if [[ $rc -eq 0 ]] && grep -q "Usage:" "$TMP/help.txt"; then pass "$name --help works"
+  else fail "$name --help works (exit $rc)"; fi
+
+  rc=0; "$script" definitely-not-a-command >"$TMP/bad.txt" 2>&1 || rc=$?
+  if [[ $rc -ne 0 ]] && grep -q "unknown command" "$TMP/bad.txt"; then pass "$name rejects unknown commands"
+  else fail "$name rejects unknown commands (exit $rc)"; fi
+
+  lib="$(loadable "$script")"
+
+  # The agent is a whole second script living inside a heredoc — a stray
+  # terminator or a quoting slip there is invisible until it hits a container.
+  ( set +u; source "$lib" >/dev/null 2>&1; manage_script ) > "$TMP/agent.sh" 2>/dev/null
+  if [[ -s "$TMP/agent.sh" ]]; then
+    bash -n "$TMP/agent.sh" 2>/dev/null
+    check $? "$name embedded agent parses"
+    head -1 "$TMP/agent.sh" | grep -q '^#!' 
+    check $? "$name embedded agent keeps its shebang"
+  else
+    fail "$name embedded agent is empty"
+  fi
+
+  # Every line of the summary box must be the same width, or it looks broken
+  # in the one place a user is guaranteed to be reading: the final output.
+  widths="$(
+    ( set +u
+      source "$lib" >/dev/null 2>&1
+      CT_HOSTNAME="test"
+      summary 999 "192.168.1.53" 2>/dev/null
+    ) | sed 's/\x1b\[[0-9;]*m//g' | grep -c '.' >/dev/null 2>&1 || true
+    ( set +u
+      source "$lib" >/dev/null 2>&1
+      CT_HOSTNAME="test"
+      summary 999 "192.168.1.53" 2>/dev/null
+    ) | sed 's/\x1b\[[0-9;]*m//g' | awk 'NF {print length($0)}' | sort -u | wc -l
+  )"
+  [[ "$(echo "$widths" | tr -d ' ')" == "1" ]]
+  check $? "$name summary box is aligned"
+done
+
+printf '\nSource files\n'
+for f in "$ROOT"/src/lib/*.sh "$ROOT"/src/*/*/*.sh; do
+  [[ -f "$f" ]] || continue
+  bash -n "$f" 2>/dev/null
+  check $? "${f#"$ROOT/"} parses"
+done
+
+printf '\n%d passed, %d failed\n\n' "$PASS" "$FAIL"
+[[ "$FAIL" -eq 0 ]]

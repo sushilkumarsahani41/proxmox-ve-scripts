@@ -1,0 +1,2 @@
+# Proxmox VE virtual machine scripts land here.
+# See ../CONTRIBUTING.md — copy src/ct-lxc/_template into src/vm/<service>/.
