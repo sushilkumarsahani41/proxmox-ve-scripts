@@ -3,9 +3,9 @@
 # adguardhome-lxc.sh — AdGuard Home on Proxmox VE, create to teardown.
 # Run this on a PVE host, as root.
 #
-#   create              Create a Debian 12 LXC (matching the host's own
-#                       architecture — amd64 or arm64) and install
-#                       AdGuard Home inside it
+#   create              Create a Debian LXC (newest Debian template the host
+#                       has or can fetch, matching its own architecture —
+#                       amd64 or arm64) and install AdGuard Home inside it
 #   update <ctid>       Safely update AdGuard Home on an existing container:
 #                       backs up config/data, lets the upstream installer do
 #                       its reinstall, restores config/data, and rolls back
@@ -23,8 +23,8 @@
 # create options:
 #   -i, --id <id>          Container ID (default: next free ID)
 #   -n, --hostname <name>  Container hostname (default: adguardhome)
-#   -s, --storage <name>   Storage for the rootfs (default: local-lvm)
-#   -t, --template-storage <name>  Storage to keep CT templates on (default: local)
+#   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
+#   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
 #   -b, --bridge <name>    Network bridge (default: vmbr0)
 #   -d, --disk <GB>        Disk size in GB (default: 4)
 #   -c, --cores <n>        CPU cores (default: 1)
@@ -33,10 +33,10 @@
 #   --gateway <ip>         Gateway, required with --static
 #   --channel <name>       AdGuard Home channel: release, beta, edge
 #   --template <spec>      Skip template auto-detection entirely, e.g.
-#                           local:vztmpl/debian-12-standard_12.7-1_arm64.tar.zst
-#                           (use this if 'pveam available' can't see an arm64
-#                           template on your box, e.g. some ARM/Pi Proxmox
-#                           builds with a broken/incomplete appliance mirror)
+#                           local:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst
+#                           (rarely needed — detection already falls back to
+#                           templates already cached on the host when the
+#                           appliance mirror is broken or unreachable)
 #
 # A DNS server wants a fixed address: --static is strongly recommended, since
 # every client on the LAN will be pointed at this container's IP.
@@ -71,9 +71,9 @@ cat <<'EOF_PVS_USAGE'
 adguardhome-lxc.sh — AdGuard Home on Proxmox VE, create to teardown.
 Run this on a PVE host, as root.
 
-  create              Create a Debian 12 LXC (matching the host's own
-                      architecture — amd64 or arm64) and install
-                      AdGuard Home inside it
+  create              Create a Debian LXC (newest Debian template the host
+                      has or can fetch, matching its own architecture —
+                      amd64 or arm64) and install AdGuard Home inside it
   update <ctid>       Safely update AdGuard Home on an existing container:
                       backs up config/data, lets the upstream installer do
                       its reinstall, restores config/data, and rolls back
@@ -91,8 +91,8 @@ Usage:
 create options:
   -i, --id <id>          Container ID (default: next free ID)
   -n, --hostname <name>  Container hostname (default: adguardhome)
-  -s, --storage <name>   Storage for the rootfs (default: local-lvm)
-  -t, --template-storage <name>  Storage to keep CT templates on (default: local)
+  -s, --storage <name>   Storage for the rootfs (default: auto-detected)
+  -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
   -b, --bridge <name>    Network bridge (default: vmbr0)
   -d, --disk <GB>        Disk size in GB (default: 4)
   -c, --cores <n>        CPU cores (default: 1)
@@ -101,10 +101,10 @@ create options:
   --gateway <ip>         Gateway, required with --static
   --channel <name>       AdGuard Home channel: release, beta, edge
   --template <spec>      Skip template auto-detection entirely, e.g.
-                          local:vztmpl/debian-12-standard_12.7-1_arm64.tar.zst
-                          (use this if 'pveam available' can't see an arm64
-                          template on your box, e.g. some ARM/Pi Proxmox
-                          builds with a broken/incomplete appliance mirror)
+                          local:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst
+                          (rarely needed — detection already falls back to
+                          templates already cached on the host when the
+                          appliance mirror is broken or unreachable)
 
 A DNS server wants a fixed address: --static is strongly recommended, since
 every client on the LAN will be pointed at this container's IP.
@@ -131,7 +131,10 @@ fi
 info() { printf "%b[*]%b %s\n" "$C_INFO" "$C_RESET" "$1" >&2; }
 ok()   { printf "%b[+]%b %s\n" "$C_OK" "$C_RESET" "$1" >&2; }
 warn() { printf "%b[!]%b %s\n" "$C_WARN" "$C_RESET" "$1" >&2; }
-die()  { printf "%b[x]%b %s\n" "$C_ERR" "$C_RESET" "$1" >&2; exit 1; }
+# `trap - ERR` first: die() is a deliberate exit, and without this the ERR
+# trap fires on the way out and prints a second, useless "failed at line N"
+# underneath the real explanation.
+die()  { printf "%b[x]%b %s\n" "$C_ERR" "$C_RESET" "$1" >&2; trap - ERR; exit 1; }
 
 trap 'die "failed at line $LINENO (exit code $?)"' ERR
 
@@ -159,17 +162,34 @@ PURGE=0
 
 is_installed() { [[ -x "$AGH_BIN" ]]; }
 
+# Deliberately separate from is_installed: a plain `uninstall` removes the
+# binary but keeps ${AGH_DIR}, so "uninstall, then decide to purge after all"
+# is a natural sequence that must not be refused for having nothing to remove.
+has_data() { [[ -d "$AGH_DIR" ]]; }
+
+agh_version() { "$AGH_BIN" --version 2>&1 | sed -n 's/^AdGuard Home, version //p' | tail -n1; }
+
 # Architecture/download/channel logic is deliberately NOT reimplemented here —
 # it is delegated to AdGuard's own official installer. Hardcoding a URL like
 # ".../AdGuardHome_linux_amd64.tar.gz" is exactly how "amd64 only" bugs happen
 # the moment upstream changes something.
+# Cleanup is explicit rather than a `trap ... RETURN`: a RETURN trap set inside
+# a function is not scoped to that function (that needs `set -o functrace`), so
+# it stays installed and fires again on the *next* function return — by which
+# point $tmp_script is out of scope and `set -u` kills the script. That bug hid
+# here happily, because it only triggered after the install had already
+# succeeded.
 run_vendor_installer() {
   info "running AdGuard Home's official installer (channel: ${CHANNEL})"
-  local tmp_script
+  local tmp_script rc=0
   tmp_script="$(mktemp)"
-  trap 'rm -f "$tmp_script"' RETURN
-  curl -fsSL "$VENDOR_INSTALL_URL" -o "$tmp_script"
-  sh "$tmp_script" -c "$CHANNEL" -o /opt -v "$@"
+  if curl -fsSL "$VENDOR_INSTALL_URL" -o "$tmp_script"; then
+    sh "$tmp_script" -c "$CHANNEL" -o /opt -v "$@" || rc=$?
+  else
+    rc=1
+  fi
+  rm -f "$tmp_script"
+  return "$rc"
 }
 
 backup_state() {
@@ -190,7 +210,30 @@ restore_state() {
   return 0
 }
 
-service_is_running() { "$AGH_BIN" -s status 2>/dev/null | grep -qi "running"; }
+# AdGuard Home writes `-s status` to STDERR, not stdout. The 2>&1 here is
+# load-bearing: without it this reads an empty string, concludes the service is
+# down, and cmd_update rolls back every single time — including after a
+# perfectly good upgrade. systemd is the cross-check, since the vendor
+# installer registers a unit anyway.
+service_state() {
+  local out
+  out="$("$AGH_BIN" -s status 2>&1 || true)"
+  case "$out" in
+    *"service: running"*) echo "running"; return 0 ;;
+    *"service: stopped"*) echo "stopped"; return 0 ;;
+  esac
+  if command -v systemctl >/dev/null 2>&1; then
+    case "$(systemctl is-active AdGuardHome 2>/dev/null || true)" in
+      active) echo "running" ;;
+      inactive|failed) echo "stopped" ;;
+      *) echo "unknown" ;;
+    esac
+  else
+    echo "unknown"
+  fi
+}
+
+service_is_running() { [[ "$(service_state)" == "running" ]]; }
 
 wait_for_service() {
   local tries=15
@@ -230,7 +273,7 @@ cmd_update() {
   is_installed || die "AdGuard Home is not installed — use 'install' instead"
 
   local old_version backup_dir
-  old_version="$("$AGH_BIN" --version 2>/dev/null || echo "unknown")"
+  old_version="$(agh_version)"
   info "current version: ${old_version}"
 
   backup_dir="$(backup_state)"
@@ -255,16 +298,20 @@ cmd_update() {
   fi
 
   local new_version
-  new_version="$("$AGH_BIN" --version 2>/dev/null || echo "unknown")"
+  new_version="$(agh_version)"
   ok "updated: ${old_version} -> ${new_version}"
   print_access_info
 }
 
 cmd_uninstall() {
   require_root
-  is_installed || die "AdGuard Home is not installed"
-  "$AGH_BIN" -s stop >/dev/null 2>&1 || true
-  "$AGH_BIN" -s uninstall >/dev/null 2>&1 || true
+  if ! is_installed && ! has_data; then
+    die "AdGuard Home is not installed and there is nothing left at ${AGH_DIR}"
+  fi
+  if is_installed; then
+    "$AGH_BIN" -s stop >/dev/null 2>&1 || true
+    "$AGH_BIN" -s uninstall >/dev/null 2>&1 || true
+  fi
   if [[ "$PURGE" -eq 1 ]]; then
     rm -rf "$AGH_DIR"
     ok "AdGuard Home service and files removed"
@@ -276,10 +323,14 @@ cmd_uninstall() {
 
 cmd_status() {
   is_installed || die "AdGuard Home is not installed"
-  echo "version:  $("$AGH_BIN" --version 2>/dev/null || echo unknown)"
-  echo "service:  $("$AGH_BIN" -s status 2>/dev/null || echo unknown)"
+  echo "version:  $(agh_version)"
+  echo "service:  $(service_state)"
+  echo "address:  http://$(container_ip):3000"
+  # -u as well as -t: DNS is UDP, and port 53 is the entire point of this
+  # container. It stays unbound until the setup wizard has been completed.
   if command -v ss >/dev/null 2>&1; then
-    ss -ltnp 2>/dev/null | grep -E ':(53|3000)\b' || true
+    echo "ports:"
+    ss -ltunp 2>/dev/null | awk 'NR==1 || /:(53|3000) /' | sed 's/^/  /' || true
   fi
 }
 
@@ -323,7 +374,10 @@ fi
 info() { printf "%b[*]%b %s\n" "$C_INFO" "$C_RESET" "$1" >&2; }
 ok()   { printf "%b[+]%b %s\n" "$C_OK" "$C_RESET" "$1" >&2; }
 warn() { printf "%b[!]%b %s\n" "$C_WARN" "$C_RESET" "$1" >&2; }
-die()  { printf "%b[x]%b %s\n" "$C_ERR" "$C_RESET" "$1" >&2; exit 1; }
+# `trap - ERR` first: die() is a deliberate exit, and without this the ERR
+# trap fires on the way out and prints a second, useless "failed at line N"
+# underneath the real explanation.
+die()  { printf "%b[x]%b %s\n" "$C_ERR" "$C_RESET" "$1" >&2; trap - ERR; exit 1; }
 
 # The help text is baked in at build time (see the `# @usage` directive) rather
 # than scraped from $0 at runtime, because $0 is an unreadable/one-shot pipe
@@ -422,8 +476,50 @@ resolve_ctid() {
   pvesh get /cluster/nextid
 }
 
+# Proxmox installs disagree about storage names: `local-lvm` on a stock
+# install, `local-zfs` on ZFS root, and on dir-based images (the Raspberry Pi
+# one, for instance) there is only `local`. Hardcoding local-lvm and letting
+# `pct create` fail four steps later is a bad first five minutes.
+resolve_storage() {
+  local content="$1" explicit="$2" preferred="$3" candidates s
+
+  if [[ -n "$explicit" ]]; then
+    if ! pvesm status --content "$content" 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$explicit"; then
+      warn "storage '${explicit}' is not an active storage supporting '${content}' on this host — trying anyway"
+    fi
+    echo "$explicit"
+    return 0
+  fi
+
+  candidates="$(pvesm status --content "$content" 2>/dev/null | awk 'NR>1 && $3=="active" {print $1}')"
+  [[ -n "$candidates" ]] || die "no active storage on this host supports '${content}' — pass one explicitly"
+
+  for s in $preferred; do
+    if printf '%s\n' "$candidates" | grep -qx "$s"; then
+      echo "$s"
+      return 0
+    fi
+  done
+  printf '%s\n' "$candidates" | head -n1
+}
+
+# Container templates are named like: debian-13-standard_13.6-1_arm64.tar.zst
+# TEMPLATE_PATTERN matches the leading name part, and the default deliberately
+# accepts *any* Debian major version — pinning "debian-12" means the script
+# breaks on a host whose mirror only offers 13, which is exactly what a current
+# PVE 9 arm64 install looks like.
+template_regex() { printf '^%s_[^_]*_%s\.tar\.(zst|gz)$' "$TEMPLATE_PATTERN" "$1"; }
+
+cached_template_files() {
+  pveam list "$TEMPLATE_STORAGE" 2>/dev/null | awk 'NR>1 {print $1}' | sed 's|.*/||'
+}
+
+available_template_files() {
+  pveam available --section system 2>/dev/null | awk 'NF>1 {print $2}'
+}
+
 ensure_template() {
-  local arch="$1" template update_err avail_out avail_err
+  local arch="$1" rx cached avail best update_err
 
   # A --template override skips all of this — use it verbatim.
   if [[ -n "$TEMPLATE" ]]; then
@@ -431,7 +527,15 @@ ensure_template() {
     return 0
   fi
 
-  info "checking for a ${TEMPLATE_DISTRO} (${arch}) container template"
+  rx="$(template_regex "$arch")"
+  info "looking for a ${TEMPLATE_PATTERN} (${arch}) container template"
+
+  # Check what is already downloaded *before* touching the network. A template
+  # sitting in local:vztmpl makes the whole appliance-mirror question moot, and
+  # broken or unreachable mirrors are common enough (third-party mirrors, ARM
+  # images, no internet at all) that failing there while the file is already on
+  # disk would be absurd.
+  cached="$(cached_template_files | grep -E "$rx" | sort -V | tail -n1 || true)"
 
   if ! update_err="$(pveam update 2>&1 >/dev/null)"; then
     warn "pveam update failed, continuing with whatever is already cached: ${update_err}"
@@ -439,28 +543,27 @@ ensure_template() {
     warn "pveam update: ${update_err}"
   fi
 
-  avail_err="$(mktemp)"
-  avail_out="$(pveam available --section system 2>"$avail_err" || true)"
-  if [[ -s "$avail_err" ]]; then
-    warn "pveam available reported: $(cat "$avail_err")"
-  fi
-  rm -f "$avail_err"
+  avail="$(available_template_files | grep -E "$rx" | sort -V | tail -n1 || true)"
 
-  template="$(printf '%s\n' "$avail_out" \
-    | awk -v a="$arch" -v d="$TEMPLATE_DISTRO" '$2 ~ "^"d".*_"a"\\.tar\\.(zst|gz)$" {print $2}' \
-    | sort -V | tail -n1)"
+  # Newest of the two, but never re-download something we already have.
+  best="$(printf '%s\n%s\n' "$cached" "$avail" | grep -v '^$' | sort -V | tail -n1 || true)"
 
-  if [[ -z "$template" ]]; then
-    warn "no ${TEMPLATE_DISTRO} template for arch '${arch}' found. Entries currently listed:"
-    printf '%s\n' "$avail_out" | grep -iE "${TEMPLATE_DISTRO%%-*}" 1>&2 \
-      || echo "  (none at all — the appliance list looks empty or broken on this host)" 1>&2
+  if [[ -z "$best" ]]; then
+    warn "no template matching '${TEMPLATE_PATTERN}' for arch '${arch}' is cached or offered."
+    warn "cached on ${TEMPLATE_STORAGE}:"
+    cached_template_files | sed 's/^/      /' >&2 || true
+    warn "offered by the appliance list for ${arch}:"
+    available_template_files | grep -E "_${arch}\." | sed 's/^/      /' >&2 \
+      || echo "      (nothing for ${arch} — the appliance list looks broken or incomplete on this host)" >&2
     die "fix the appliance list (see warnings above), or skip auto-detection entirely with: --template <storage>:vztmpl/<filename>"
   fi
 
-  if ! pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q "$template"; then
-    run_step "downloading template ${template}" pveam download "$TEMPLATE_STORAGE" "$template"
+  if [[ "$best" == "$cached" ]]; then
+    info "using cached template ${best}"
+  else
+    run_step "downloading template ${best}" pveam download "$TEMPLATE_STORAGE" "$best"
   fi
-  echo "${TEMPLATE_STORAGE}:vztmpl/${template}"
+  echo "${TEMPLATE_STORAGE}:vztmpl/${best}"
 }
 
 build_net_arg() {
@@ -526,9 +629,10 @@ trap 'die "failed at line $LINENO (exit code $?)"' ERR
 # Runtime knobs, seeded from the service's DEFAULT_* block.
 CTID=""
 CT_HOSTNAME="${DEFAULT_HOSTNAME}"
-ROOTFS_STORAGE="${DEFAULT_ROOTFS_STORAGE:-local-lvm}"
-TEMPLATE_STORAGE="${DEFAULT_TEMPLATE_STORAGE:-local}"
-TEMPLATE_DISTRO="${DEFAULT_TEMPLATE_DISTRO:-debian-12-standard}"
+# Empty means "work it out from the host" — see resolve_storage().
+ROOTFS_STORAGE="${DEFAULT_ROOTFS_STORAGE:-}"
+TEMPLATE_STORAGE="${DEFAULT_TEMPLATE_STORAGE:-}"
+TEMPLATE_PATTERN="${DEFAULT_TEMPLATE_PATTERN:-debian-[0-9]+-standard}"
 BRIDGE="${DEFAULT_BRIDGE:-vmbr0}"
 DISK_GB="${DEFAULT_DISK_GB:-4}"
 CORES="${DEFAULT_CORES:-1}"
@@ -628,10 +732,12 @@ do_create() {
 
   arch="$(resolve_arch)"
   ctid="$(resolve_ctid)"
+  ROOTFS_STORAGE="$(resolve_storage rootdir "$ROOTFS_STORAGE" "local-lvm local-zfs local")"
+  TEMPLATE_STORAGE="$(resolve_storage vztmpl "$TEMPLATE_STORAGE" "local")"
   template="$(ensure_template "$arch")"
   net_arg="$(build_net_arg)"
 
-  info "target: CT ${ctid} (${CT_HOSTNAME}) on ${arch}, template ${template}"
+  info "target: CT ${ctid} (${CT_HOSTNAME}) on ${arch}, rootfs ${ROOTFS_STORAGE}, template ${template}"
 
   create_container "$ctid" "$template" "$net_arg"
   wait_for_network "$ctid"
@@ -639,11 +745,26 @@ do_create() {
 
   info "installing ${SERVICE_NAME}"
   svc_install_args
-  pct exec "$ctid" -- "$MANAGE_PATH" install ${SVC_INSTALL_ARGS[@]+"${SVC_INSTALL_ARGS[@]}"}
+  pct_exec_manage "$ctid" install ${SVC_INSTALL_ARGS[@]+"${SVC_INSTALL_ARGS[@]}"}
 
   ip="$(container_ip "$ctid")"
   svc_post_create "$ctid" "${ip:-}"
   summary "$ctid" "${ip:-<CT-ip>}"
+}
+
+# The agent inside the container has already printed a precise explanation by
+# the time it exits non-zero. Letting that bubble into the ERR trap appends a
+# second, contentless "failed at line 749" underneath it, which reads like a
+# crash rather than the deliberate refusal it is. Pass the status through
+# instead.
+pct_exec_manage() {
+  local ctid="$1"; shift
+  local rc=0
+  pct exec "$ctid" -- "$MANAGE_PATH" "$@" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    trap - ERR
+    exit "$rc"
+  fi
 }
 
 do_manage() {
@@ -651,7 +772,7 @@ do_manage() {
   require_pve_host
   require_ctid_exists "$ctid"
   push_manage_script "$ctid"
-  pct exec "$ctid" -- "$MANAGE_PATH" "$action" "$@"
+  pct_exec_manage "$ctid" "$action" "$@"
 }
 
 pvs_main() {

@@ -22,7 +22,13 @@ of the thing:
 Other things they try to get right:
 
 - **Your architecture, not just amd64.** Templates are resolved against
-  `dpkg --print-architecture`, so arm64 hosts work.
+  `dpkg --print-architecture`, so arm64 hosts work. Developed against a
+  Raspberry Pi 5 running PVE 9.
+- **Your storage, whatever it's called.** `local-lvm` on a stock install,
+  `local-zfs` on ZFS, plain `local` on the Pi image — detected, not assumed.
+- **Your templates, whatever's on the mirror.** Any Debian major version is
+  accepted, newest wins, and a template already cached on the host is used as-is
+  — so a broken or unreachable appliance mirror stops being fatal.
 - **No reimplemented vendor logic.** Where upstream ships an installer, these
   call it. Hardcoding `..._linux_amd64.tar.gz` is how "amd64 only" bugs are
   born.
@@ -78,8 +84,8 @@ Every `create` accepts these:
 |---|---|---|
 | `-i, --id <id>` | next free | Container ID |
 | `-n, --hostname <name>` | per service | Container hostname |
-| `-s, --storage <name>` | `local-lvm` | Storage for the rootfs |
-| `-t, --template-storage <name>` | `local` | Where CT templates live |
+| `-s, --storage <name>` | auto-detected | Storage for the rootfs |
+| `-t, --template-storage <name>` | auto-detected | Where CT templates live |
 | `-b, --bridge <name>` | `vmbr0` | Network bridge |
 | `-d, --disk <GB>` | per service | Disk size |
 | `-c, --cores <n>` | per service | CPU cores |
@@ -88,9 +94,24 @@ Every `create` accepts these:
 | `--gateway <ip>` | — | Required with `--static` |
 | `--template <spec>` | auto | Bypass template detection entirely |
 
-`--template` is the escape hatch for hosts whose `pveam available` list is
-broken or incomplete (common on some ARM/Pi Proxmox builds). Pass a template
-you already have: `--template local:vztmpl/debian-12-standard_12.7-1_arm64.tar.zst`
+`--template` is the escape hatch if detection still picks wrong. Pass a
+template you already have:
+`--template local:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst`
+
+## Tested on
+
+`ct-lxc/adguardhome-lxc.sh` was verified end-to-end — create, status, update,
+uninstall, uninstall --purge, and the failure paths — on:
+
+| | |
+|---|---|
+| Host | Raspberry Pi 5, Proxmox VE 9.0.10, arm64 |
+| Storage | single `local` dir storage (no `local-lvm`) |
+| Template | `debian-13-standard_13.6-1_arm64` |
+| Networking | both DHCP and `--static` |
+
+That host has a broken appliance mirror, which is how the cached-template
+fallback earned its place.
 
 ## How this repo is built
 

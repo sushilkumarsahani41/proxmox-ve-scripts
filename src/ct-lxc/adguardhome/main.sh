@@ -3,9 +3,9 @@
 # adguardhome-lxc.sh — AdGuard Home on Proxmox VE, create to teardown.
 # Run this on a PVE host, as root.
 #
-#   create              Create a Debian 12 LXC (matching the host's own
-#                       architecture — amd64 or arm64) and install
-#                       AdGuard Home inside it
+#   create              Create a Debian LXC (newest Debian template the host
+#                       has or can fetch, matching its own architecture —
+#                       amd64 or arm64) and install AdGuard Home inside it
 #   update <ctid>       Safely update AdGuard Home on an existing container:
 #                       backs up config/data, lets the upstream installer do
 #                       its reinstall, restores config/data, and rolls back
@@ -23,8 +23,8 @@
 # create options:
 #   -i, --id <id>          Container ID (default: next free ID)
 #   -n, --hostname <name>  Container hostname (default: adguardhome)
-#   -s, --storage <name>   Storage for the rootfs (default: local-lvm)
-#   -t, --template-storage <name>  Storage to keep CT templates on (default: local)
+#   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
+#   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
 #   -b, --bridge <name>    Network bridge (default: vmbr0)
 #   -d, --disk <GB>        Disk size in GB (default: 4)
 #   -c, --cores <n>        CPU cores (default: 1)
@@ -33,10 +33,10 @@
 #   --gateway <ip>         Gateway, required with --static
 #   --channel <name>       AdGuard Home channel: release, beta, edge
 #   --template <spec>      Skip template auto-detection entirely, e.g.
-#                           local:vztmpl/debian-12-standard_12.7-1_arm64.tar.zst
-#                           (use this if 'pveam available' can't see an arm64
-#                           template on your box, e.g. some ARM/Pi Proxmox
-#                           builds with a broken/incomplete appliance mirror)
+#                           local:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst
+#                           (rarely needed — detection already falls back to
+#                           templates already cached on the host when the
+#                           appliance mirror is broken or unreachable)
 #
 # A DNS server wants a fixed address: --static is strongly recommended, since
 # every client on the LAN will be pointed at this container's IP.

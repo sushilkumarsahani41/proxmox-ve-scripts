@@ -9,9 +9,10 @@ trap 'die "failed at line $LINENO (exit code $?)"' ERR
 # Runtime knobs, seeded from the service's DEFAULT_* block.
 CTID=""
 CT_HOSTNAME="${DEFAULT_HOSTNAME}"
-ROOTFS_STORAGE="${DEFAULT_ROOTFS_STORAGE:-local-lvm}"
-TEMPLATE_STORAGE="${DEFAULT_TEMPLATE_STORAGE:-local}"
-TEMPLATE_DISTRO="${DEFAULT_TEMPLATE_DISTRO:-debian-12-standard}"
+# Empty means "work it out from the host" — see resolve_storage().
+ROOTFS_STORAGE="${DEFAULT_ROOTFS_STORAGE:-}"
+TEMPLATE_STORAGE="${DEFAULT_TEMPLATE_STORAGE:-}"
+TEMPLATE_PATTERN="${DEFAULT_TEMPLATE_PATTERN:-debian-[0-9]+-standard}"
 BRIDGE="${DEFAULT_BRIDGE:-vmbr0}"
 DISK_GB="${DEFAULT_DISK_GB:-4}"
 CORES="${DEFAULT_CORES:-1}"
@@ -111,10 +112,12 @@ do_create() {
 
   arch="$(resolve_arch)"
   ctid="$(resolve_ctid)"
+  ROOTFS_STORAGE="$(resolve_storage rootdir "$ROOTFS_STORAGE" "local-lvm local-zfs local")"
+  TEMPLATE_STORAGE="$(resolve_storage vztmpl "$TEMPLATE_STORAGE" "local")"
   template="$(ensure_template "$arch")"
   net_arg="$(build_net_arg)"
 
-  info "target: CT ${ctid} (${CT_HOSTNAME}) on ${arch}, template ${template}"
+  info "target: CT ${ctid} (${CT_HOSTNAME}) on ${arch}, rootfs ${ROOTFS_STORAGE}, template ${template}"
 
   create_container "$ctid" "$template" "$net_arg"
   wait_for_network "$ctid"
@@ -122,11 +125,26 @@ do_create() {
 
   info "installing ${SERVICE_NAME}"
   svc_install_args
-  pct exec "$ctid" -- "$MANAGE_PATH" install ${SVC_INSTALL_ARGS[@]+"${SVC_INSTALL_ARGS[@]}"}
+  pct_exec_manage "$ctid" install ${SVC_INSTALL_ARGS[@]+"${SVC_INSTALL_ARGS[@]}"}
 
   ip="$(container_ip "$ctid")"
   svc_post_create "$ctid" "${ip:-}"
   summary "$ctid" "${ip:-<CT-ip>}"
+}
+
+# The agent inside the container has already printed a precise explanation by
+# the time it exits non-zero. Letting that bubble into the ERR trap appends a
+# second, contentless "failed at line 749" underneath it, which reads like a
+# crash rather than the deliberate refusal it is. Pass the status through
+# instead.
+pct_exec_manage() {
+  local ctid="$1"; shift
+  local rc=0
+  pct exec "$ctid" -- "$MANAGE_PATH" "$@" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    trap - ERR
+    exit "$rc"
+  fi
 }
 
 do_manage() {
@@ -134,7 +152,7 @@ do_manage() {
   require_pve_host
   require_ctid_exists "$ctid"
   push_manage_script "$ctid"
-  pct exec "$ctid" -- "$MANAGE_PATH" "$action" "$@"
+  pct_exec_manage "$ctid" "$action" "$@"
 }
 
 pvs_main() {

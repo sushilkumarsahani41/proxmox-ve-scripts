@@ -25,8 +25,50 @@ resolve_ctid() {
   pvesh get /cluster/nextid
 }
 
+# Proxmox installs disagree about storage names: `local-lvm` on a stock
+# install, `local-zfs` on ZFS root, and on dir-based images (the Raspberry Pi
+# one, for instance) there is only `local`. Hardcoding local-lvm and letting
+# `pct create` fail four steps later is a bad first five minutes.
+resolve_storage() {
+  local content="$1" explicit="$2" preferred="$3" candidates s
+
+  if [[ -n "$explicit" ]]; then
+    if ! pvesm status --content "$content" 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$explicit"; then
+      warn "storage '${explicit}' is not an active storage supporting '${content}' on this host — trying anyway"
+    fi
+    echo "$explicit"
+    return 0
+  fi
+
+  candidates="$(pvesm status --content "$content" 2>/dev/null | awk 'NR>1 && $3=="active" {print $1}')"
+  [[ -n "$candidates" ]] || die "no active storage on this host supports '${content}' — pass one explicitly"
+
+  for s in $preferred; do
+    if printf '%s\n' "$candidates" | grep -qx "$s"; then
+      echo "$s"
+      return 0
+    fi
+  done
+  printf '%s\n' "$candidates" | head -n1
+}
+
+# Container templates are named like: debian-13-standard_13.6-1_arm64.tar.zst
+# TEMPLATE_PATTERN matches the leading name part, and the default deliberately
+# accepts *any* Debian major version — pinning "debian-12" means the script
+# breaks on a host whose mirror only offers 13, which is exactly what a current
+# PVE 9 arm64 install looks like.
+template_regex() { printf '^%s_[^_]*_%s\.tar\.(zst|gz)$' "$TEMPLATE_PATTERN" "$1"; }
+
+cached_template_files() {
+  pveam list "$TEMPLATE_STORAGE" 2>/dev/null | awk 'NR>1 {print $1}' | sed 's|.*/||'
+}
+
+available_template_files() {
+  pveam available --section system 2>/dev/null | awk 'NF>1 {print $2}'
+}
+
 ensure_template() {
-  local arch="$1" template update_err avail_out avail_err
+  local arch="$1" rx cached avail best update_err
 
   # A --template override skips all of this — use it verbatim.
   if [[ -n "$TEMPLATE" ]]; then
@@ -34,7 +76,15 @@ ensure_template() {
     return 0
   fi
 
-  info "checking for a ${TEMPLATE_DISTRO} (${arch}) container template"
+  rx="$(template_regex "$arch")"
+  info "looking for a ${TEMPLATE_PATTERN} (${arch}) container template"
+
+  # Check what is already downloaded *before* touching the network. A template
+  # sitting in local:vztmpl makes the whole appliance-mirror question moot, and
+  # broken or unreachable mirrors are common enough (third-party mirrors, ARM
+  # images, no internet at all) that failing there while the file is already on
+  # disk would be absurd.
+  cached="$(cached_template_files | grep -E "$rx" | sort -V | tail -n1 || true)"
 
   if ! update_err="$(pveam update 2>&1 >/dev/null)"; then
     warn "pveam update failed, continuing with whatever is already cached: ${update_err}"
@@ -42,28 +92,27 @@ ensure_template() {
     warn "pveam update: ${update_err}"
   fi
 
-  avail_err="$(mktemp)"
-  avail_out="$(pveam available --section system 2>"$avail_err" || true)"
-  if [[ -s "$avail_err" ]]; then
-    warn "pveam available reported: $(cat "$avail_err")"
-  fi
-  rm -f "$avail_err"
+  avail="$(available_template_files | grep -E "$rx" | sort -V | tail -n1 || true)"
 
-  template="$(printf '%s\n' "$avail_out" \
-    | awk -v a="$arch" -v d="$TEMPLATE_DISTRO" '$2 ~ "^"d".*_"a"\\.tar\\.(zst|gz)$" {print $2}' \
-    | sort -V | tail -n1)"
+  # Newest of the two, but never re-download something we already have.
+  best="$(printf '%s\n%s\n' "$cached" "$avail" | grep -v '^$' | sort -V | tail -n1 || true)"
 
-  if [[ -z "$template" ]]; then
-    warn "no ${TEMPLATE_DISTRO} template for arch '${arch}' found. Entries currently listed:"
-    printf '%s\n' "$avail_out" | grep -iE "${TEMPLATE_DISTRO%%-*}" 1>&2 \
-      || echo "  (none at all — the appliance list looks empty or broken on this host)" 1>&2
+  if [[ -z "$best" ]]; then
+    warn "no template matching '${TEMPLATE_PATTERN}' for arch '${arch}' is cached or offered."
+    warn "cached on ${TEMPLATE_STORAGE}:"
+    cached_template_files | sed 's/^/      /' >&2 || true
+    warn "offered by the appliance list for ${arch}:"
+    available_template_files | grep -E "_${arch}\." | sed 's/^/      /' >&2 \
+      || echo "      (nothing for ${arch} — the appliance list looks broken or incomplete on this host)" >&2
     die "fix the appliance list (see warnings above), or skip auto-detection entirely with: --template <storage>:vztmpl/<filename>"
   fi
 
-  if ! pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q "$template"; then
-    run_step "downloading template ${template}" pveam download "$TEMPLATE_STORAGE" "$template"
+  if [[ "$best" == "$cached" ]]; then
+    info "using cached template ${best}"
+  else
+    run_step "downloading template ${best}" pveam download "$TEMPLATE_STORAGE" "$best"
   fi
-  echo "${TEMPLATE_STORAGE}:vztmpl/${template}"
+  echo "${TEMPLATE_STORAGE}:vztmpl/${best}"
 }
 
 build_net_arg() {

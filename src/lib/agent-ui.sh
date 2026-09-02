@@ -12,7 +12,10 @@ fi
 info() { printf "%b[*]%b %s\n" "$C_INFO" "$C_RESET" "$1" >&2; }
 ok()   { printf "%b[+]%b %s\n" "$C_OK" "$C_RESET" "$1" >&2; }
 warn() { printf "%b[!]%b %s\n" "$C_WARN" "$C_RESET" "$1" >&2; }
-die()  { printf "%b[x]%b %s\n" "$C_ERR" "$C_RESET" "$1" >&2; exit 1; }
+# `trap - ERR` first: die() is a deliberate exit, and without this the ERR
+# trap fires on the way out and prints a second, useless "failed at line N"
+# underneath the real explanation.
+die()  { printf "%b[x]%b %s\n" "$C_ERR" "$C_RESET" "$1" >&2; trap - ERR; exit 1; }
 
 trap 'die "failed at line $LINENO (exit code $?)"' ERR
 

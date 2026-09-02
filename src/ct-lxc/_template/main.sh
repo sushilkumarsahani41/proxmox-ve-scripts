@@ -3,8 +3,9 @@
 # myservice-lxc.sh — My Service on Proxmox VE, create to teardown.
 # Run this on a PVE host, as root.
 #
-#   create              Create a Debian 12 LXC (matching the host's own
-#                       architecture) and install My Service inside it
+#   create              Create a Debian LXC (newest Debian template the host
+#                       has or can fetch, matching its own architecture) and
+#                       install My Service inside it
 #   update <ctid>       Update My Service in an existing container
 #   uninstall <ctid>    Remove My Service (--purge also wipes config/data)
 #   status <ctid>       Show version + service state
@@ -18,8 +19,8 @@
 # create options:
 #   -i, --id <id>          Container ID (default: next free ID)
 #   -n, --hostname <name>  Container hostname (default: myservice)
-#   -s, --storage <name>   Storage for the rootfs (default: local-lvm)
-#   -t, --template-storage <name>  Storage to keep CT templates on (default: local)
+#   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
+#   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
 #   -b, --bridge <name>    Network bridge (default: vmbr0)
 #   -d, --disk <GB>        Disk size in GB (default: 4)
 #   -c, --cores <n>        CPU cores (default: 1)
@@ -27,7 +28,7 @@
 #   --static <cidr>        Static IP, e.g. 192.168.1.50/24 (default: dhcp)
 #   --gateway <ip>         Gateway, required with --static
 #   --template <spec>      Skip template auto-detection, e.g.
-#                           local:vztmpl/debian-12-standard_12.7-1_arm64.tar.zst
+#                           local:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst
 #
 # This whole comment block becomes --help output, so keep it accurate: the
 # `# @usage` directive below bakes it into the built script verbatim.
@@ -46,9 +47,9 @@ DEFAULT_CORES="1"
 DEFAULT_MEMORY_MB="512"
 
 # Optional, only if the defaults don't suit:
-#   DEFAULT_ROOTFS_STORAGE="local-lvm"
-#   DEFAULT_TEMPLATE_STORAGE="local"
-#   DEFAULT_TEMPLATE_DISTRO="debian-12-standard"
+#   DEFAULT_ROOTFS_STORAGE="local-lvm"    # default: auto-detected
+#   DEFAULT_TEMPLATE_STORAGE="local"      # default: auto-detected
+#   DEFAULT_TEMPLATE_PATTERN="debian-13-standard"   # pin a major version
 #   DEFAULT_BRIDGE="vmbr0"
 #   DEFAULT_UNPRIVILEGED="1"     # 0 for things needing host devices
 #   DEFAULT_NESTING="0"          # 1 for anything running Docker inside
