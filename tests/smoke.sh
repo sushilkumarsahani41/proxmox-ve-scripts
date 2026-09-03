@@ -92,6 +92,63 @@ for script in ${scripts[@]+"${scripts[@]}"}; do
   check $? "$name summary box is aligned"
 done
 
+# The spinner only runs when stdout is a terminal, so piping a script's output
+# anywhere (which every check above does) skips that code entirely. That is
+# exactly how a `set -e` fatal inside the spinner loop shipped. Allocate a real
+# pty so this path is actually exercised.
+# script(1) needs a controlling terminal of its own, which CI runners and
+# sandboxes often lack; openpty does not. Python is only used to hand the
+# script under test a genuine tty on stdout — nothing else depends on it.
+run_in_pty() {
+  python3 - "$1" <<'PY_EOF'
+import os, pty, subprocess, sys
+
+master, slave = pty.openpty()
+proc = subprocess.Popen(["bash", "-c", sys.argv[1]],
+                        stdout=slave, stderr=slave,
+                        stdin=subprocess.DEVNULL, close_fds=True)
+os.close(slave)
+chunks = []
+while True:
+    try:
+        data = os.read(master, 4096)
+    except OSError:
+        break
+    if not data:
+        break
+    chunks.append(data)
+os.close(master)
+sys.stdout.write(b"".join(chunks).decode("utf-8", "replace"))
+sys.exit(proc.wait())
+PY_EOF
+}
+
+printf '\nInteractive (pty) paths\n'
+if ! command -v python3 >/dev/null 2>&1; then
+  printf '  \033[33mskip\033[0m python3 not available — pty paths untested\n'
+else
+  for script_path in ${scripts[@]+"${scripts[@]}"}; do
+    name="$(basename "$script_path")"
+    lib="$(loadable "$script_path")"
+
+    out="$(run_in_pty "set -Eeuo pipefail; source '$lib' >/dev/null 2>&1; run_step 'spinner check' sleep 0.4" 2>&1 || true)"
+    if printf '%s' "$out" | grep -q '\[+\] spinner check'; then
+      pass "$name run_step succeeds on a tty"
+    else
+      fail "$name run_step succeeds on a tty (got: $(printf '%s' "$out" | tr -d '\r' | tail -1))"
+    fi
+
+    # A failing step must report the failure and surface the captured output,
+    # not vanish behind the spinner.
+    out="$(run_in_pty "set -Eeuo pipefail; source '$lib' >/dev/null 2>&1; run_step 'failing step' bash -c 'echo NEEDLE >&2; exit 3'" 2>&1 || true)"
+    if printf '%s' "$out" | grep -q '\[x\] failing step' && printf '%s' "$out" | grep -q 'NEEDLE'; then
+      pass "$name run_step reports failure and its output on a tty"
+    else
+      fail "$name run_step reports failure and its output on a tty"
+    fi
+  done
+fi
+
 printf '\nDispatcher\n'
 bash -n "$ROOT/install.sh" 2>/dev/null
 check $? "install.sh parses"

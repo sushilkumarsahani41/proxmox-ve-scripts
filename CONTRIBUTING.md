@@ -85,10 +85,24 @@ your box and one that works on someone else's.
   silently.
 - **Don't swallow output.** Use `run_step` — it hides output on success and
   dumps all of it on failure.
+- **Never write `(( i++ ))` as a statement.** An arithmetic command whose
+  result is 0 exits non-zero, and post-increment yields the value *before* the
+  increment — so with `i=0` the first call returns failure and `set -e` kills
+  the script. Use `i=$(( i + 1 ))`. Same for `(( n-- ))` reaching 0. Inside
+  `if (( ... ))` or a loop condition it is fine, because those are condition
+  contexts.
 - **Target bash 5** (what Proxmox ships) but **stay parseable on bash 3.2**
   (what macOS ships), so `tests/smoke.sh` runs locally. Notably: no
   `declare -A`, no `readarray`, and use `${arr[@]+"${arr[@]}"}` when an array
   may be empty under `set -u`.
+- **Do not trust a local pass as proof.** bash 3.2 and bash 5 disagree about
+  `set -e`: `(( i++ ))` with `i=0` aborts under bash 5 and is silently ignored
+  under 3.2. A bug of exactly this kind shipped because it passed on macOS.
+  CI runs on bash 5 — treat that, not your laptop, as the verdict.
+- **Anything gated on `[[ -t 1 ]]` needs a pty test.** Piping a script's output
+  disables the spinner entirely, so ordinary checks never execute that code.
+  `tests/smoke.sh` allocates a real pty for those paths; extend it rather than
+  assuming.
 
 ## Testing
 

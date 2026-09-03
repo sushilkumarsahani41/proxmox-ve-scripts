@@ -241,7 +241,7 @@ wait_for_service() {
   while (( tries > 0 )); do
     service_is_running && return 0
     sleep 1
-    (( tries-- ))
+    tries=$(( tries - 1 ))
   done
   return 1
 }
@@ -363,8 +363,10 @@ EOF_MANAGE_SCRIPT
 if [[ -t 1 ]]; then
   C_INFO="\033[36m"; C_OK="\033[32m"; C_ERR="\033[31m"; C_WARN="\033[33m"
   C_BRAND="\033[1;36m"; C_DIM="\033[2m"; C_BOLD="\033[1m"; C_RESET="\033[0m"
+  C_CLR="\r\033[K"
 else
   C_INFO=""; C_OK=""; C_ERR=""; C_WARN=""; C_BRAND=""; C_DIM=""; C_BOLD=""; C_RESET=""
+  C_CLR=""
 fi
 
 # info/ok/warn/die are status output for a human, never a function's return
@@ -375,10 +377,12 @@ fi
 info() { printf "%b[*]%b %s\n" "$C_INFO" "$C_RESET" "$1" >&2; }
 ok()   { printf "%b[+]%b %s\n" "$C_OK" "$C_RESET" "$1" >&2; }
 warn() { printf "%b[!]%b %s\n" "$C_WARN" "$C_RESET" "$1" >&2; }
-# `trap - ERR` first: die() is a deliberate exit, and without this the ERR
-# trap fires on the way out and prints a second, useless "failed at line N"
+# C_CLR rewinds and wipes any half-drawn spinner line, so an error never gets
+# printed onto the end of one ("creating container 100[x] failed at line 418").
+# `trap - ERR` first: die() is a deliberate exit, and without this the ERR trap
+# fires on the way out and prints a second, useless "failed at line N"
 # underneath the real explanation.
-die()  { printf "%b[x]%b %s\n" "$C_ERR" "$C_RESET" "$1" >&2; trap - ERR; exit 1; }
+die()  { printf "%b%b[x]%b %s\n" "$C_CLR" "$C_ERR" "$C_RESET" "$1" >&2; trap - ERR; exit 1; }
 
 # The help text is baked in at build time (see the `# @usage` directive) rather
 # than scraped from $0 at runtime, because $0 is an unreadable/one-shot pipe
@@ -396,13 +400,21 @@ banner() {
   [[ -t 1 ]] && clear
   printf "%b%s%b\n" "$C_BRAND" "$BANNER_ART" "$C_RESET"
   printf "%b%s%b\n" "$C_BOLD" "                    T E C H N O L O G I E S" "$C_RESET"
-  printf "%b%s%b\n" "$C_DIM"  "             ${SERVICE_NAME} · Proxmox VE Automation" "$C_RESET"
+  printf "%b%s%b\n" "$C_DIM"  "             ${SERVICE_NAME} - Proxmox VE Automation" "$C_RESET"
   printf "%b%s%b\n" "$C_DIM"  "---------------------------------------------------------------" "$C_RESET"
 }
 
+# Braille spinner frames are multibyte, and indexing them one character at a
+# time only works when bash is in a UTF-8 locale. Outside one, ${str:i:1} slices
+# bytes and emits mojibake, so fall back to plain ASCII rather than gamble on
+# the terminal.
+case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+  *UTF-8*|*utf-8*|*UTF8*|*utf8*) SPINNER_FRAMES="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏" ;;
+  *)                             SPINNER_FRAMES='|/-\' ;;
+esac
+
 # Runs a command quietly with a spinner + message; on failure, prints its
 # captured output so nothing important is ever silently swallowed.
-SPINNER_FRAMES="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 run_step() {
   local msg="$1"; shift
   local log rc=0 i=0 n=${#SPINNER_FRAMES}
@@ -415,7 +427,12 @@ run_step() {
     while kill -0 "$pid" 2>/dev/null; do
       printf "\r%b%s%b %s" "$C_INFO" "${SPINNER_FRAMES:$((i % n)):1}" "$C_RESET" "$msg" >&2
       sleep 0.1
-      (( i++ ))
+      # NOT `(( i++ ))`: an arithmetic command whose result is 0 exits 1, and
+      # post-increment yields the value *before* the increment — so the very
+      # first tick, with i=0, returns failure and `set -e` kills the script
+      # mid-spinner. Only reachable on a real terminal, which is exactly where
+      # it matters.
+      i=$(( i + 1 ))
     done
   fi
 
@@ -529,7 +546,7 @@ ensure_template() {
   fi
 
   rx="$(template_regex "$arch")"
-  info "looking for a ${TEMPLATE_PATTERN} (${arch}) container template"
+  info "looking for a ${TEMPLATE_LABEL} (${arch}) container template"
 
   # Check what is already downloaded *before* touching the network. A template
   # sitting in local:vztmpl makes the whole appliance-mirror question moot, and
@@ -550,7 +567,7 @@ ensure_template() {
   best="$(printf '%s\n%s\n' "$cached" "$avail" | grep -v '^$' | sort -V | tail -n1 || true)"
 
   if [[ -z "$best" ]]; then
-    warn "no template matching '${TEMPLATE_PATTERN}' for arch '${arch}' is cached or offered."
+    warn "no ${TEMPLATE_LABEL} template for arch '${arch}' is cached or offered (pattern: ${TEMPLATE_PATTERN})."
     warn "cached on ${TEMPLATE_STORAGE}:"
     cached_template_files | sed 's/^/      /' >&2 || true
     warn "offered by the appliance list for ${arch}:"
@@ -585,7 +602,7 @@ wait_for_network() {
       return 0
     fi
     sleep 2
-    (( tries-- ))
+    tries=$(( tries - 1 ))
   done
   die "container never came up with working networking/apt"
 }
@@ -634,6 +651,8 @@ CT_HOSTNAME="${DEFAULT_HOSTNAME}"
 ROOTFS_STORAGE="${DEFAULT_ROOTFS_STORAGE:-}"
 TEMPLATE_STORAGE="${DEFAULT_TEMPLATE_STORAGE:-}"
 TEMPLATE_PATTERN="${DEFAULT_TEMPLATE_PATTERN:-debian-[0-9]+-standard}"
+# TEMPLATE_PATTERN is a regex and reads like one; keep it out of status lines.
+TEMPLATE_LABEL="${DEFAULT_TEMPLATE_LABEL:-Debian}"
 BRIDGE="${DEFAULT_BRIDGE:-vmbr0}"
 DISK_GB="${DEFAULT_DISK_GB:-4}"
 CORES="${DEFAULT_CORES:-1}"

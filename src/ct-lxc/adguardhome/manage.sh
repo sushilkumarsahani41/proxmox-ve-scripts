@@ -93,7 +93,7 @@ wait_for_service() {
   while (( tries > 0 )); do
     service_is_running && return 0
     sleep 1
-    (( tries-- ))
+    tries=$(( tries - 1 ))
   done
   return 1
 }

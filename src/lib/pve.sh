@@ -77,7 +77,7 @@ ensure_template() {
   fi
 
   rx="$(template_regex "$arch")"
-  info "looking for a ${TEMPLATE_PATTERN} (${arch}) container template"
+  info "looking for a ${TEMPLATE_LABEL} (${arch}) container template"
 
   # Check what is already downloaded *before* touching the network. A template
   # sitting in local:vztmpl makes the whole appliance-mirror question moot, and
@@ -98,7 +98,7 @@ ensure_template() {
   best="$(printf '%s\n%s\n' "$cached" "$avail" | grep -v '^$' | sort -V | tail -n1 || true)"
 
   if [[ -z "$best" ]]; then
-    warn "no template matching '${TEMPLATE_PATTERN}' for arch '${arch}' is cached or offered."
+    warn "no ${TEMPLATE_LABEL} template for arch '${arch}' is cached or offered (pattern: ${TEMPLATE_PATTERN})."
     warn "cached on ${TEMPLATE_STORAGE}:"
     cached_template_files | sed 's/^/      /' >&2 || true
     warn "offered by the appliance list for ${arch}:"
@@ -133,7 +133,7 @@ wait_for_network() {
       return 0
     fi
     sleep 2
-    (( tries-- ))
+    tries=$(( tries - 1 ))
   done
   die "container never came up with working networking/apt"
 }
