@@ -40,6 +40,7 @@ set -Eeuo pipefail
 # ---------------------------------------------------------------------------
 SERVICE_ID="myservice"          # used for /usr/local/sbin/<id>-manage.sh
 SERVICE_NAME="My Service"       # shown in the banner and summary
+# @tagline One line for the install.sh menu
 
 DEFAULT_HOSTNAME="myservice"
 DEFAULT_DISK_GB="4"

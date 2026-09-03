@@ -92,6 +92,30 @@ for script in ${scripts[@]+"${scripts[@]}"}; do
   check $? "$name summary box is aligned"
 done
 
+printf '\nDispatcher\n'
+bash -n "$ROOT/install.sh" 2>/dev/null
+check $? "install.sh parses"
+
+rc=0; "$ROOT/install.sh" --list >"$TMP/list.txt" 2>&1 || rc=$?
+if [[ $rc -eq 0 ]] && grep -q "Available:" "$TMP/list.txt"; then pass "install.sh --list works"
+else fail "install.sh --list works (exit $rc)"; fi
+
+rc=0; "$ROOT/install.sh" nosuchservice >"$TMP/bad.txt" 2>&1 || rc=$?
+if [[ $rc -ne 0 ]] && grep -q "unknown service" "$TMP/bad.txt"; then pass "install.sh rejects unknown services"
+else fail "install.sh rejects unknown services (exit $rc)"; fi
+
+# A catalogue entry pointing at a path that does not exist would only fail once
+# someone had already pasted the command into a PVE shell.
+missing=0
+while IFS='|' read -r id name tagline path; do
+  [[ -n "${path:-}" ]] || continue
+  if [[ ! -f "$ROOT/$path" ]]; then
+    fail "install.sh catalogue points at missing $path"
+    missing=1
+  fi
+done < <(sed -n '/^PVS_CATALOG="$/,/^"$/p' "$ROOT/install.sh" | grep '|')
+[[ "$missing" -eq 0 ]] && pass "install.sh catalogue paths all exist"
+
 printf '\nSource files\n'
 for f in "$ROOT"/src/lib/*.sh "$ROOT"/src/*/*/*.sh; do
   [[ -f "$f" ]] || continue

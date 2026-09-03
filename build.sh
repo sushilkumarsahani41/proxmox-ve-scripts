@@ -125,9 +125,10 @@ render() {
   rm -f "$ROOT/.build-body.tmp"
 }
 
-# Prints "<category> <service> <entry> <outpath> <filename> <url>" per service.
+# Prints one tab-separated row per service:
+#   category  service  entry  outpath  filename  url  name  tagline
 each_service() {
-  local entry category service filename out
+  local entry category service filename out name tagline
   for entry in "$SRC"/*/*/main.sh; do
     [[ -f "$entry" ]] || continue
     service="$(basename "$(dirname "$entry")")"
@@ -136,14 +137,146 @@ each_service() {
     [[ "$service" == _* ]] && continue
     filename="${service}$(suffix_for "$category")"
     out="$ROOT/$category/$filename"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$category" "$service" "$entry" "$out" "$filename" "$RAW_BASE/$category/$filename"
+    name="$(sed -n 's/^SERVICE_NAME="\(.*\)"$/\1/p' "$entry" | head -n1)"
+    tagline="$(sed -n 's/^# @tagline //p' "$entry" | head -n1)"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$category" "$service" "$entry" "$out" "$filename" "$RAW_BASE/$category/$filename" \
+      "${name:-$service}" "$tagline"
   done
+}
+
+# Generates the repo-root install.sh: one stable URL that can reach every
+# script, so the command people are given never has to change when a service is
+# added. The catalogue is baked in at build time rather than fetched, because a
+# menu that needs a second network round-trip to render is a menu that hangs.
+render_install() {
+  local category service entry out filename url name tagline
+
+  printf '#!/usr/bin/env bash\n'
+  printf '#\n'
+  printf '# install.sh — pick a service and run its script.\n'
+  printf '#\n'
+  printf '#   bash <(curl -fsSL %s/install.sh)\n' "$RAW_BASE"
+  printf '#   bash <(curl -fsSL %s/install.sh) adguardhome --static 192.168.1.53/24 --gateway 192.168.1.1\n' "$RAW_BASE"
+  printf '#\n'
+  printf '# With no arguments it shows a menu. With a service name it runs that\n'
+  printf '# script directly, passing everything after the name straight through.\n'
+  printf '#\n'
+  printf '# ---------------------------------------------------------------------------\n'
+  printf '# GENERATED FILE - DO NOT EDIT. Built by build.sh from the src/ tree.\n'
+  printf '# ---------------------------------------------------------------------------\n'
+  printf '\n'
+  printf 'set -Eeuo pipefail\n\n'
+  printf 'PVS_BASE="%s"\n\n' "$RAW_BASE"
+  printf '# id|name|tagline|path\n'
+  printf 'PVS_CATALOG="\n'
+  while IFS=$'\t' read -r category service entry out filename url name tagline; do
+    printf '%s|%s|%s|%s/%s\n' "$service" "$name" "$tagline" "$category" "$filename"
+  done < <(each_service)
+  printf '"\n'
+
+  cat <<'EOF_INSTALL'
+
+if [[ -t 1 ]]; then
+  C_BRAND="\033[1;36m"; C_DIM="\033[2m"; C_BOLD="\033[1m"
+  C_OK="\033[32m"; C_ERR="\033[31m"; C_RESET="\033[0m"
+else
+  C_BRAND=""; C_DIM=""; C_BOLD=""; C_OK=""; C_ERR=""; C_RESET=""
+fi
+
+die() { printf "%b[x]%b %s\n" "$C_ERR" "$C_RESET" "$1" >&2; exit 1; }
+
+banner() {
+  [[ -t 1 ]] && clear
+  printf "%b%s%b\n" "$C_BRAND" ' _____ ______ _____  ___ _____ _____ _   _   ___  ______ _   __
+|  __ \| ___ \  ___|/ _ \_   _/  ___| | | | / _ \ | ___ \ | / /
+| |  \/| |_/ / |__ / /_\ \| | \ `--.| |_| |/ /_\ \| |_/ / |/ /
+| | __ |    /|  __||  _  || |  `--. \  _  ||  _  ||    /|    \
+| |_\ \| |\ \| |___| | | || | /\__/ / | | || | | || |\ \| |\  \
+ \____/\_| \_\____/\_| |_/\_/ \____/\_| |_/\_| |_/\_| \_\_| \_/' "$C_RESET"
+  printf "%b%s%b\n" "$C_BOLD" "                    T E C H N O L O G I E S" "$C_RESET"
+  printf "%b%s%b\n" "$C_DIM"  "                  Proxmox VE Automation" "$C_RESET"
+  printf "%b%s%b\n" "$C_DIM"  "---------------------------------------------------------------" "$C_RESET"
+}
+
+catalog_rows() { printf '%s\n' "$PVS_CATALOG" | grep -v '^$'; }
+
+path_for() {
+  catalog_rows | awk -F'|' -v want="$1" '$1 == want {print $4; exit}'
+}
+
+list_services() {
+  printf '\n%bAvailable:%b\n\n' "$C_BOLD" "$C_RESET"
+  catalog_rows | awk -F'|' '{printf "  %-16s %s\n", $1, $3}'
+  printf '\n'
+}
+
+# Runs the chosen script straight from its own URL rather than saving it, so
+# that script sees $0 as a pipe and prints its own accurate "save a copy to
+# manage this later" advice, pointing at its own direct URL rather than at a
+# temp file that will not exist tomorrow.
+run_service() {
+  local id="$1"; shift
+  local path
+  path="$(path_for "$id")"
+  [[ -n "$path" ]] || { list_services; die "unknown service: ${id}"; }
+  exec bash <(curl -fsSL "${PVS_BASE}/${path}") "$@"
+}
+
+menu() {
+  local ids count choice
+  ids="$(catalog_rows | awk -F'|' '{print $1}')"
+  count="$(printf '%s\n' "$ids" | grep -c .)"
+
+  printf '\n%bWhat do you want to install?%b\n\n' "$C_BOLD" "$C_RESET"
+  catalog_rows | awk -F'|' '{printf "  %2d) %-16s %s\n", NR, $2, $3}'
+  printf '\n   q) quit\n\n'
+
+  # Read from the terminal explicitly: stdin is the script itself under
+  # `curl | bash`, and would otherwise be consumed or empty.
+  printf 'Choice [1-%s]: ' "$count"
+  read -r choice </dev/tty || die "no terminal to read a choice from — pass a service name instead"
+
+  case "$choice" in
+    q|Q|"") printf 'Nothing to do.\n'; exit 0 ;;
+    *[!0-9]*) die "not a number: ${choice}" ;;
+  esac
+  [[ "$choice" -ge 1 && "$choice" -le "$count" ]] || die "choose between 1 and ${count}"
+
+  run_service "$(printf '%s\n' "$ids" | sed -n "${choice}p")"
+}
+
+main() {
+  case "${1:-}" in
+    -l|--list|list) banner; list_services; exit 0 ;;
+    -h|--help|help)
+      banner
+      printf '\n  bash <(curl -fsSL %s/install.sh)              interactive menu\n' "$PVS_BASE"
+      printf '  bash <(curl -fsSL %s/install.sh) <service>    run one directly\n' "$PVS_BASE"
+      printf '\n  Anything after <service> is passed straight to that script,\n'
+      printf '  so --help and every create option work as normal.\n'
+      list_services
+      exit 0 ;;
+  esac
+
+  command -v curl >/dev/null 2>&1 || die "curl is required"
+
+  banner
+  if [[ $# -eq 0 ]]; then
+    menu
+  else
+    local id="$1"; shift
+    run_service "$id" "$@"
+  fi
+}
+
+main "$@"
+EOF_INSTALL
 }
 
 build_all() {
   local only="${1:-}" built=0 category service entry out filename url
-  while IFS=$'\t' read -r category service entry out filename url; do
+  while IFS=$'\t' read -r category service entry out filename url name tagline; do
     [[ -n "$only" && "$service" != "$only" ]] && continue
     mkdir -p "$(dirname "$out")"
     render "$entry" "$filename" "${entry#"$ROOT/"}" "$url" > "$out"
@@ -153,13 +286,17 @@ build_all() {
     built=$(( built + 1 ))
   done < <(each_service)
   [[ "$built" -eq 0 ]] && err "nothing built${only:+ (no service named '$only')}"
-  printf '%d script(s) built.\n' "$built"
+  render_install > "$ROOT/install.sh"
+  chmod +x "$ROOT/install.sh"
+  bash -n "$ROOT/install.sh" || err "install.sh failed syntax check"
+  printf '  built  %-14s -> install.sh\n' "dispatcher"
+  printf '%d script(s) built.\n' "$(( built + 1 ))"
 }
 
 check_all() {
   local stale=0 category service entry out filename url tmp
   tmp="$(mktemp)"
-  while IFS=$'\t' read -r category service entry out filename url; do
+  while IFS=$'\t' read -r category service entry out filename url name tagline; do
     render "$entry" "$filename" "${entry#"$ROOT/"}" "$url" > "$tmp"
     if [[ ! -f "$out" ]]; then
       printf '  MISSING  %s/%s\n' "$category" "$filename"; stale=1
@@ -169,6 +306,14 @@ check_all() {
       printf '  ok       %s/%s\n' "$category" "$filename"
     fi
   done < <(each_service)
+  render_install > "$tmp"
+  if [[ ! -f "$ROOT/install.sh" ]]; then
+    printf '  MISSING  install.sh\n'; stale=1
+  elif ! diff -q "$tmp" "$ROOT/install.sh" >/dev/null; then
+    printf '  STALE    install.sh\n'; stale=1
+  else
+    printf '  ok       install.sh\n'
+  fi
   rm -f "$tmp"
   if [[ "$stale" -eq 1 ]]; then
     printf 'Built scripts are out of date. Run ./build.sh\n' >&2
@@ -183,7 +328,7 @@ lint_all() {
     return 0
   fi
   local category service entry out filename url rc=0
-  while IFS=$'\t' read -r category service entry out filename url; do
+  while IFS=$'\t' read -r category service entry out filename url name tagline; do
     [[ -f "$out" ]] || continue
     printf '  linting %s\n' "$out"
     shellcheck -S warning "$out" || rc=1

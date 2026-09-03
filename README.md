@@ -42,11 +42,25 @@ Other things they try to get right:
 Run on the **Proxmox VE host**, as root.
 
 ```bash
-# AdGuard Home, DHCP address, all defaults
+bash <(curl -fsSL https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/install.sh)
+```
+
+That's the only URL worth remembering — it lists everything available and lets
+you pick. To skip the menu, name the service and pass whatever options you want:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/install.sh) \
+  adguardhome --static 192.168.1.53/24 --gateway 192.168.1.1
+```
+
+Each script is also reachable on its own, if you'd rather be explicit:
+
+```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/adguardhome-lxc.sh)
 ```
 
-Or download it once, which makes the management commands nicer to use:
+For the management commands, download it once — then `update` and `status` are
+just a local command instead of a URL:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/adguardhome-lxc.sh -o adguardhome-lxc.sh
@@ -125,6 +139,7 @@ src/ct-lxc/<service>/manage.sh   what runs inside the container
         |  ./build.sh
         v
 ct-lxc/<service>-lxc.sh          one flat, self-contained script
+install.sh                       dispatcher, catalogue baked in at build time
 ```
 
 Users still get one dependency-free file; bugs in the shared Proxmox logic
