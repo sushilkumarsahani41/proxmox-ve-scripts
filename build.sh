@@ -126,9 +126,9 @@ render() {
 }
 
 # Prints one tab-separated row per service:
-#   category  service  entry  outpath  filename  url  name  tagline
+#   category  service  entry  outpath  filename  url  name  tagline  aliases
 each_service() {
-  local entry category service filename out name tagline
+  local entry category service filename out name tagline aliases
   for entry in "$SRC"/*/*/main.sh; do
     [[ -f "$entry" ]] || continue
     service="$(basename "$(dirname "$entry")")"
@@ -139,10 +139,30 @@ each_service() {
     out="$ROOT/$category/$filename"
     name="$(sed -n 's/^SERVICE_NAME="\(.*\)"$/\1/p' "$entry" | head -n1)"
     tagline="$(sed -n 's/^# @tagline //p' "$entry" | head -n1)"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    aliases="$(sed -n 's/^# @alias //p' "$entry" | tr '\n' ' ' | sed 's/ *$//')"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$category" "$service" "$entry" "$out" "$filename" "$RAW_BASE/$category/$filename" \
-      "${name:-$service}" "$tagline"
+      "${name:-$service}" "$tagline" "$aliases"
   done
+}
+
+# A shim kept at an old path so links handed out before a rename keep working.
+# It cannot just be a copy — that would silently go stale — so it fetches the
+# current script instead, and says plainly that the path moved.
+render_alias_shim() {
+  local alias_name="$1" url="$2" newfile="$3"
+  printf '#!/usr/bin/env bash\n'
+  printf '#\n'
+  printf '# %s-lxc.sh — deprecated path, kept so existing links keep working.\n' "$alias_name"
+  printf '# The script now lives at %s\n' "$newfile"
+  printf '#\n'
+  printf '# GENERATED FILE - DO NOT EDIT. Built by build.sh.\n'
+  printf '# @pvs-shim\n'
+  printf '\n'
+  printf 'set -Eeuo pipefail\n'
+  printf 'printf "note: this path has moved to %s — update your bookmark.\\n" >&2\n' "$newfile"
+  printf 'command -v curl >/dev/null 2>&1 || { echo "curl is required" >&2; exit 1; }\n'
+  printf 'exec bash <(curl -fsSL "%s") "$@"\n' "$url"
 }
 
 # Generates the repo-root install.sh: one stable URL that can reach every
@@ -168,10 +188,10 @@ render_install() {
   printf '\n'
   printf 'set -Eeuo pipefail\n\n'
   printf 'PVS_BASE="%s"\n\n' "$RAW_BASE"
-  printf '# id|name|tagline|path\n'
+  printf '# id|name|tagline|path|aliases\n'
   printf 'PVS_CATALOG="\n'
-  while IFS=$'\t' read -r category service entry out filename url name tagline; do
-    printf '%s|%s|%s|%s/%s\n' "$service" "$name" "$tagline" "$category" "$filename"
+  while IFS=$'\t' read -r category service entry out filename url name tagline aliases; do
+    printf '%s|%s|%s|%s/%s|%s\n' "$service" "$name" "$tagline" "$category" "$filename" "$aliases"
   done < <(each_service)
   printf '"\n'
 
@@ -201,8 +221,15 @@ banner() {
 
 catalog_rows() { printf '%s\n' "$PVS_CATALOG" | grep -v '^$'; }
 
+# Matches the canonical id first, then any alias, so a link handed out under an
+# older name still resolves.
 path_for() {
-  catalog_rows | awk -F'|' -v want="$1" '$1 == want {print $4; exit}'
+  catalog_rows | awk -F'|' -v want="$1" '
+    $1 == want { print $4; exit }
+    {
+      n = split($5, a, " ")
+      for (i = 1; i <= n; i++) if (a[i] == want) { print $4; exit }
+    }'
 }
 
 list_services() {
@@ -261,8 +288,11 @@ main() {
 
   command -v curl >/dev/null 2>&1 || die "curl is required"
 
-  banner
+  # Only the menu draws a banner. When a service is named outright, the script
+  # being launched draws its own combined header a moment later, and drawing
+  # one here first would just flash a banner off the screen.
   if [[ $# -eq 0 ]]; then
+    banner
     menu
   else
     local id="$1"; shift
@@ -275,8 +305,8 @@ EOF_INSTALL
 }
 
 build_all() {
-  local only="${1:-}" built=0 category service entry out filename url
-  while IFS=$'\t' read -r category service entry out filename url name tagline; do
+  local only="${1:-}" built=0 a category service entry out filename url
+  while IFS=$'\t' read -r category service entry out filename url name tagline aliases; do
     [[ -n "$only" && "$service" != "$only" ]] && continue
     mkdir -p "$(dirname "$out")"
     render "$entry" "$filename" "${entry#"$ROOT/"}" "$url" > "$out"
@@ -284,6 +314,12 @@ build_all() {
     bash -n "$out" || err "$out failed syntax check"
     printf '  built  %-14s -> %s/%s\n' "$service" "$category" "$filename"
     built=$(( built + 1 ))
+    for a in $aliases; do
+      render_alias_shim "$a" "$url" "$category/$filename" > "$ROOT/$category/${a}$(suffix_for "$category")"
+      chmod +x "$ROOT/$category/${a}$(suffix_for "$category")"
+      printf '  shim   %-14s -> %s/%s%s\n' "$a" "$category" "$a" "$(suffix_for "$category")"
+      built=$(( built + 1 ))
+    done
   done < <(each_service)
   [[ "$built" -eq 0 ]] && err "nothing built${only:+ (no service named '$only')}"
   render_install > "$ROOT/install.sh"
@@ -294,9 +330,10 @@ build_all() {
 }
 
 check_all() {
-  local stale=0 category service entry out filename url tmp
+  local stale=0 a shim category service entry out filename url tmp tmp2
   tmp="$(mktemp)"
-  while IFS=$'\t' read -r category service entry out filename url name tagline; do
+  tmp2="$(mktemp)"
+  while IFS=$'\t' read -r category service entry out filename url name tagline aliases; do
     render "$entry" "$filename" "${entry#"$ROOT/"}" "$url" > "$tmp"
     if [[ ! -f "$out" ]]; then
       printf '  MISSING  %s/%s\n' "$category" "$filename"; stale=1
@@ -305,6 +342,17 @@ check_all() {
     else
       printf '  ok       %s/%s\n' "$category" "$filename"
     fi
+    for a in $aliases; do
+      shim="$ROOT/$category/${a}$(suffix_for "$category")"
+      render_alias_shim "$a" "$url" "$category/$filename" > "$tmp2"
+      if [[ ! -f "$shim" ]]; then
+        printf '  MISSING  %s/%s (alias)\n' "$category" "$(basename "$shim")"; stale=1
+      elif ! diff -q "$tmp2" "$shim" >/dev/null; then
+        printf '  STALE    %s/%s (alias)\n' "$category" "$(basename "$shim")"; stale=1
+      else
+        printf '  ok       %s/%s (alias)\n' "$category" "$(basename "$shim")"
+      fi
+    done
   done < <(each_service)
   render_install > "$tmp"
   if [[ ! -f "$ROOT/install.sh" ]]; then
@@ -314,7 +362,7 @@ check_all() {
   else
     printf '  ok       install.sh\n'
   fi
-  rm -f "$tmp"
+  rm -f "$tmp" "$tmp2"
   if [[ "$stale" -eq 1 ]]; then
     printf 'Built scripts are out of date. Run ./build.sh\n' >&2
     exit 1
@@ -328,7 +376,7 @@ lint_all() {
     return 0
   fi
   local category service entry out filename url rc=0
-  while IFS=$'\t' read -r category service entry out filename url name tagline; do
+  while IFS=$'\t' read -r category service entry out filename url name tagline aliases; do
     [[ -f "$out" ]] || continue
     printf '  linting %s\n' "$out"
     shellcheck -S warning "$out" || rc=1

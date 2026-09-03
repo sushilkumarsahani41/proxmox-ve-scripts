@@ -42,8 +42,25 @@ if [[ ${#scripts[@]} -eq 0 ]]; then
   fail "no built scripts found — run ./build.sh"
 fi
 
+is_shim() { grep -q '^# @pvs-shim$' "$1"; }
+
 for script in ${scripts[@]+"${scripts[@]}"}; do
   name="$(basename "$script")"
+
+  # Deprecated-path shims are three lines that fetch the real script; the
+  # checks below (help text, embedded agent, summary box) do not apply, and
+  # running them would hit the network.
+  if is_shim "$script"; then
+    bash -n "$script" 2>/dev/null
+    check $? "$name (shim) parses"
+    target="$(sed -n 's|.*/main/\(.*\)") "\$@"|\1|p' "$script" | head -n1)"
+    if [[ -n "$target" && -f "$ROOT/$target" ]]; then
+      pass "$name (shim) points at $target"
+    else
+      fail "$name (shim) points at a missing target: ${target:-<unparsed>}"
+    fi
+    continue
+  fi
 
   bash -n "$script" 2>/dev/null
   check $? "$name parses"
@@ -128,6 +145,7 @@ if ! command -v python3 >/dev/null 2>&1; then
   printf '  \033[33mskip\033[0m python3 not available — pty paths untested\n'
 else
   for script_path in ${scripts[@]+"${scripts[@]}"}; do
+    is_shim "$script_path" && continue
     name="$(basename "$script_path")"
     lib="$(loadable "$script_path")"
 
@@ -164,7 +182,7 @@ else fail "install.sh rejects unknown services (exit $rc)"; fi
 # A catalogue entry pointing at a path that does not exist would only fail once
 # someone had already pasted the command into a PVE shell.
 missing=0
-while IFS='|' read -r id name tagline path; do
+while IFS='|' read -r id name tagline path aliases; do
   [[ -n "${path:-}" ]] || continue
   if [[ ! -f "$ROOT/$path" ]]; then
     fail "install.sh catalogue points at missing $path"

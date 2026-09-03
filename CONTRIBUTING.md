@@ -31,6 +31,7 @@ container automatically picks up fixes the moment you run `update` against it.
 1. `cp -r src/ct-lxc/_template src/ct-lxc/<service>` (use `src/vm/` for a VM).
    The directory name becomes the script name: `src/ct-lxc/jellyfin/` builds
    `ct-lxc/jellyfin-lxc.sh`. Directories starting with `_` are skipped.
+   Hyphenate multi-word names (`adguard-home`, not `adguardhome`).
 2. Rewrite the header comment in `main.sh`. It *is* the `--help` output — the
    `# @usage` directive bakes it into the built script.
 3. Set `SERVICE_ID`, `SERVICE_NAME` and the `DEFAULT_*` block.
@@ -39,6 +40,10 @@ container automatically picks up fixes the moment you run `update` against it.
 6. `./build.sh <service> && ./tests/smoke.sh`
 7. Add a row to the table in `README.md`.
 8. Commit **both** the source and the built script.
+
+Renaming an existing service? Add `# @alias <old-name>` to its `main.sh`. That
+keeps the old name working on the command line and regenerates a shim at the
+old file path, so URLs already handed out do not 404.
 
 ## Build directives
 
@@ -49,6 +54,8 @@ Only these three, understood in any source file:
 | `# @include <path>` | Inlines `src/<path>`, recursively |
 | `# @embed <path> AS <fn>` | Inlines `src/<path>` as a function that `cat`s it |
 | `# @usage` | Bakes this file's header comment into `pvs_usage_text()` |
+| `# @tagline <text>` | One-line description for the `install.sh` menu |
+| `# @alias <name>` | An older name that should still resolve; also generates a shim at the old file path |
 
 Include order in `main.sh` matters: `ui.sh`, then `pve.sh`, then `main.sh`.
 `lib/main.sh` reads the `DEFAULT_*` values defined above it and installs no-op

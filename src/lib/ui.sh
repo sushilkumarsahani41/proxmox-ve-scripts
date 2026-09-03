@@ -38,11 +38,23 @@ BANNER_ART=' _____ ______ _____  ___ _____ _____ _   _   ___  ______ _   __
 | |_\ \| |\ \| |___| | | || | /\__/ / | | || | | || |\ \| |\  \
  \____/\_| \_\____/\_| |_/\_/ \____/\_| |_/\_| |_/\_| \_\_| \_/'
 
+BANNER_WIDTH=63
+
+# Centre a line under the ASCII art rather than hand-counting spaces, so the
+# title stays put whatever the service is called.
+banner_center() {
+  local text="$1" pad=0
+  if [[ ${#text} -lt $BANNER_WIDTH ]]; then
+    pad=$(( (BANNER_WIDTH - ${#text}) / 2 ))
+  fi
+  printf '%*s%s' "$pad" "" "$text"
+}
+
 banner() {
   [[ -t 1 ]] && clear
   printf "%b%s%b\n" "$C_BRAND" "$BANNER_ART" "$C_RESET"
-  printf "%b%s%b\n" "$C_BOLD" "                    T E C H N O L O G I E S" "$C_RESET"
-  printf "%b%s%b\n" "$C_DIM"  "             ${SERVICE_NAME} - Proxmox VE Automation" "$C_RESET"
+  printf "%b%s%b\n" "$C_BOLD" "$(banner_center 'T E C H N O L O G I E S')" "$C_RESET"
+  printf "%b%s%b\n" "$C_DIM"  "$(banner_center "GreatShark - ${SERVICE_NAME} - Proxmox VE")" "$C_RESET"
   printf "%b%s%b\n" "$C_DIM"  "---------------------------------------------------------------" "$C_RESET"
 }
 

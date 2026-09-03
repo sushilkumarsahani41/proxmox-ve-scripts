@@ -16,9 +16,9 @@ set -Eeuo pipefail
 
 PVS_BASE="https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main"
 
-# id|name|tagline|path
+# id|name|tagline|path|aliases
 PVS_CATALOG="
-adguardhome|AdGuard Home|Network-wide DNS ad and tracker blocking|ct-lxc/adguardhome-lxc.sh
+adguard-home|AdGuard Home|Network-wide DNS ad and tracker blocking|ct-lxc/adguard-home-lxc.sh|adguardhome
 "
 
 if [[ -t 1 ]]; then
@@ -45,8 +45,15 @@ banner() {
 
 catalog_rows() { printf '%s\n' "$PVS_CATALOG" | grep -v '^$'; }
 
+# Matches the canonical id first, then any alias, so a link handed out under an
+# older name still resolves.
 path_for() {
-  catalog_rows | awk -F'|' -v want="$1" '$1 == want {print $4; exit}'
+  catalog_rows | awk -F'|' -v want="$1" '
+    $1 == want { print $4; exit }
+    {
+      n = split($5, a, " ")
+      for (i = 1; i <= n; i++) if (a[i] == want) { print $4; exit }
+    }'
 }
 
 list_services() {
@@ -105,8 +112,11 @@ main() {
 
   command -v curl >/dev/null 2>&1 || die "curl is required"
 
-  banner
+  # Only the menu draws a banner. When a service is named outright, the script
+  # being launched draws its own combined header a moment later, and drawing
+  # one here first would just flash a banner off the screen.
   if [[ $# -eq 0 ]]; then
+    banner
     menu
   else
     local id="$1"; shift

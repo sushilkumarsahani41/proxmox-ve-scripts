@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# adguardhome-lxc.sh — AdGuard Home on Proxmox VE, create to teardown.
+# adguard-home-lxc.sh — AdGuard Home on Proxmox VE, create to teardown.
 # Run this on a PVE host, as root.
 #
 #   create              Create a Debian LXC (newest Debian template the host
@@ -15,10 +15,10 @@
 #   status <ctid>       Show version + service state
 #
 # Usage:
-#   ./adguardhome-lxc.sh create [options]
-#   ./adguardhome-lxc.sh update <ctid> [--channel release|beta|edge]
-#   ./adguardhome-lxc.sh uninstall <ctid> [--purge]
-#   ./adguardhome-lxc.sh status <ctid>
+#   ./adguard-home-lxc.sh create [options]
+#   ./adguard-home-lxc.sh update <ctid> [--channel release|beta|edge]
+#   ./adguard-home-lxc.sh uninstall <ctid> [--purge]
+#   ./adguard-home-lxc.sh status <ctid>
 #
 # create options:
 #   -i, --id <id>          Container ID (default: next free ID)
@@ -46,9 +46,10 @@ set -Eeuo pipefail
 # ---------------------------------------------------------------------------
 # Service definition
 # ---------------------------------------------------------------------------
-SERVICE_ID="adguardhome"
+SERVICE_ID="adguard-home"
 SERVICE_NAME="AdGuard Home"
 # @tagline Network-wide DNS ad and tracker blocking
+# @alias adguardhome
 
 DEFAULT_HOSTNAME="adguardhome"
 DEFAULT_DISK_GB="4"
@@ -58,7 +59,7 @@ DEFAULT_MEMORY_MB="512"
 CHANNEL="release"
 
 # @usage
-# @embed ct-lxc/adguardhome/manage.sh AS manage_script
+# @embed ct-lxc/adguard-home/manage.sh AS manage_script
 # @include lib/ui.sh
 # @include lib/pve.sh
 # @include lib/main.sh

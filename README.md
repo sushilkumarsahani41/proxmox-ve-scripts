@@ -50,26 +50,29 @@ you pick. To skip the menu, name the service and pass whatever options you want:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/install.sh) \
-  adguardhome --static 192.168.1.53/24 --gateway 192.168.1.1
+  adguard-home --static 192.168.1.53/24 --gateway 192.168.1.1
 ```
+
+Service names are hyphenated (`adguard-home`). Older joined names
+(`adguardhome`) still resolve, so links handed out before a rename keep working.
 
 Each script is also reachable on its own, if you'd rather be explicit:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/adguardhome-lxc.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/adguard-home-lxc.sh)
 ```
 
 For the management commands, download it once — then `update` and `status` are
 just a local command instead of a URL:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/adguardhome-lxc.sh -o adguardhome-lxc.sh
+curl -fsSL https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/adguard-home-lxc.sh -o adguard-home-lxc.sh
 chmod +x adguardhome-lxc.sh
 
-./adguardhome-lxc.sh create --static 192.168.1.53/24 --gateway 192.168.1.1
-./adguardhome-lxc.sh status 101
-./adguardhome-lxc.sh update 101
-./adguardhome-lxc.sh uninstall 101 --purge
+./adguard-home-lxc.sh create --static 192.168.1.53/24 --gateway 192.168.1.1
+./adguard-home-lxc.sh status 101
+./adguard-home-lxc.sh update 101
+./adguard-home-lxc.sh uninstall 101 --purge
 ```
 
 Every script takes `--help`.
@@ -80,7 +83,7 @@ Every script takes `--help`.
 
 | Service | Script | Notes |
 |---|---|---|
-| AdGuard Home | [`adguardhome-lxc.sh`](ct-lxc/adguardhome-lxc.sh) | Network-wide DNS ad blocking. `--channel release\|beta\|edge`. Use `--static` — every client will point at this IP. |
+| AdGuard Home | [`adguard-home-lxc.sh`](ct-lxc/adguard-home-lxc.sh) | Network-wide DNS ad blocking. `--channel release\|beta\|edge`. Use `--static` — every client will point at this IP. |
 
 ### Virtual machines — [`vm/`](vm/)
 
@@ -114,7 +117,7 @@ template you already have:
 
 ## Tested on
 
-`ct-lxc/adguardhome-lxc.sh` was verified end-to-end — create, status, update,
+`ct-lxc/adguard-home-lxc.sh` was verified end-to-end — create, status, update,
 uninstall, uninstall --purge, and the failure paths — on:
 
 | | |
@@ -140,6 +143,7 @@ src/ct-lxc/<service>/manage.sh   what runs inside the container
         v
 ct-lxc/<service>-lxc.sh          one flat, self-contained script
 install.sh                       dispatcher, catalogue baked in at build time
+ct-lxc/<old-name>-lxc.sh         shim, if the service was ever renamed
 ```
 
 Users still get one dependency-free file; bugs in the shared Proxmox logic
