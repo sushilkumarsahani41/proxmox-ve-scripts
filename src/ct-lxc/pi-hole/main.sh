@@ -67,7 +67,7 @@ set -Eeuo pipefail
 # ---------------------------------------------------------------------------
 SERVICE_ID="pi-hole"
 SERVICE_NAME="Pi-hole"
-# @tagline Network-wide DNS ad and tracker blocking
+# @tagline The original network-wide DNS ad blocker
 # @alias pihole
 
 DEFAULT_HOSTNAME="pihole"

@@ -19,7 +19,7 @@ PVS_BASE="https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scrip
 # id|name|tagline|path|aliases
 PVS_CATALOG="
 adguard-home|AdGuard Home|Network-wide DNS ad and tracker blocking|ct-lxc/adguard-home-lxc.sh|adguardhome
-pi-hole|Pi-hole|Network-wide DNS ad and tracker blocking|ct-lxc/pi-hole-lxc.sh|pihole
+pi-hole|Pi-hole|The original network-wide DNS ad blocker|ct-lxc/pi-hole-lxc.sh|pihole
 "
 
 if [[ -t 1 ]]; then
