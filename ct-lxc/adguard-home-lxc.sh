@@ -68,8 +68,8 @@ SERVICE_NAME="AdGuard Home"
 # @tagline Network-wide DNS ad and tracker blocking
 # @alias adguardhome
 
-DEFAULT_HOSTNAME="adguardhome"
-DEFAULT_DISK_GB="4"
+DEFAULT_HOSTNAME="adguard"
+DEFAULT_DISK_GB="2"
 DEFAULT_CORES="1"
 DEFAULT_MEMORY_MB="512"
 # Every client on the LAN ends up pointed at this container's address, so a
