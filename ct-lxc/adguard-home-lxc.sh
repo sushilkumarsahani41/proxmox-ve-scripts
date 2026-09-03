@@ -3,9 +3,10 @@
 # adguard-home-lxc.sh — AdGuard Home on Proxmox VE, create to teardown.
 # Run this on a PVE host, as root.
 #
-#   create              Create a Debian LXC (newest Debian template the host
-#                       has or can fetch, matching its own architecture —
-#                       amd64 or arm64) and install AdGuard Home inside it
+#   create              Create an LXC (Debian by default, or Alpine with
+#                       --os alpine — newest template the host has or can
+#                       fetch, matching its own architecture: amd64 or
+#                       arm64) and install AdGuard Home inside it
 #   update <ctid>       Safely update AdGuard Home on an existing container:
 #                       backs up config/data, lets the upstream installer do
 #                       its reinstall, restores config/data, and rolls back
@@ -24,6 +25,9 @@
 #   -y, --defaults         Skip the questions and use the recommended values
 #   -i, --id <id>          Container ID (default: next free ID)
 #   -n, --hostname <name>  Container hostname (default: adguardhome)
+#   --os <name>             debian (default) or alpine — Alpine boots faster
+#                           and has a smaller footprint; Debian has the wider
+#                           package ecosystem if you ever exec into the box
 #   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
 #   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
 #   -b, --bridge <name>    Network bridge (default: vmbr0)
@@ -38,6 +42,7 @@
 #   --channel <name>       AdGuard Home channel: release, beta, edge
 #   --template <spec>      Skip template auto-detection entirely, e.g.
 #                           local:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst
+#                           or local:vztmpl/alpine-3.24-default_arm64.tar.xz
 #                           (rarely needed — detection already falls back to
 #                           templates already cached on the host when the
 #                           appliance mirror is broken or unreachable)
@@ -72,6 +77,14 @@ DEFAULT_HOSTNAME="adguard"
 DEFAULT_DISK_GB="2"
 DEFAULT_CORES="1"
 DEFAULT_MEMORY_MB="512"
+# AdGuard Home's own installer registers itself with whatever init system it
+# finds (systemd on Debian, OpenRC on Alpine) and exposes identical `-s
+# start|stop|status` control either way, so manage.sh below needed zero
+# OS-specific code to support this — verified on a real arm64 Alpine
+# container, not assumed. Debian stays the recommended default: longer track
+# record in this project, and apt if you ever need to exec in and debug.
+DEFAULT_OS="debian"
+DEFAULT_OS_CHOICES="debian alpine"
 # Every client on the LAN ends up pointed at this container's address, so a
 # lease that can change is a footgun. The prompt defaults to yes accordingly.
 DEFAULT_PREFER_STATIC="y"
@@ -84,9 +97,10 @@ cat <<'EOF_PVS_USAGE'
 adguard-home-lxc.sh — AdGuard Home on Proxmox VE, create to teardown.
 Run this on a PVE host, as root.
 
-  create              Create a Debian LXC (newest Debian template the host
-                      has or can fetch, matching its own architecture —
-                      amd64 or arm64) and install AdGuard Home inside it
+  create              Create an LXC (Debian by default, or Alpine with
+                      --os alpine — newest template the host has or can
+                      fetch, matching its own architecture: amd64 or
+                      arm64) and install AdGuard Home inside it
   update <ctid>       Safely update AdGuard Home on an existing container:
                       backs up config/data, lets the upstream installer do
                       its reinstall, restores config/data, and rolls back
@@ -105,6 +119,9 @@ create options:
   -y, --defaults         Skip the questions and use the recommended values
   -i, --id <id>          Container ID (default: next free ID)
   -n, --hostname <name>  Container hostname (default: adguardhome)
+  --os <name>             debian (default) or alpine — Alpine boots faster
+                          and has a smaller footprint; Debian has the wider
+                          package ecosystem if you ever exec into the box
   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
   -b, --bridge <name>    Network bridge (default: vmbr0)
@@ -119,6 +136,7 @@ create options:
   --channel <name>       AdGuard Home channel: release, beta, edge
   --template <spec>      Skip template auto-detection entirely, e.g.
                           local:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst
+                          or local:vztmpl/alpine-3.24-default_arm64.tar.xz
                           (rarely needed — detection already falls back to
                           templates already cached on the host when the
                           appliance mirror is broken or unreachable)
@@ -161,18 +179,32 @@ trap 'die "failed at line $LINENO (exit code $?)"' ERR
 
 require_root() { [[ "$(id -u)" -eq 0 ]] || die "must be run as root"; }
 
+# apk (Alpine) or apt-get (Debian) — whichever is actually on this container,
+# not whichever OS a service author assumed. Package *names* can still differ
+# between the two (this only saves you from the manager itself), so a service
+# that needs something Debian calls `sqlite3` and Alpine calls `sqlite` still
+# has to know that.
 ensure_pkg() {
   local missing=() pkg
   for pkg in "$@"; do
     command -v "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
   done
   [[ ${#missing[@]} -eq 0 ]] && return 0
-  command -v apt-get >/dev/null 2>&1 || die "missing: ${missing[*]} (and apt-get is not available to install them)"
-  apt-get update -qq
-  apt-get install -y -qq "${missing[@]}"
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -qq
+    apt-get install -y -qq "${missing[@]}"
+  elif command -v apk >/dev/null 2>&1; then
+    apk update -q
+    apk add -q "${missing[@]}"
+  else
+    die "missing: ${missing[*]} (no apt-get or apk available to install them)"
+  fi
 }
 
-container_ip() { hostname -I 2>/dev/null | awk '{print $1}'; }
+# `hostname -I` is a GNU-ism; busybox's hostname applet (Alpine) does not
+# support it. `ip addr show` is implemented identically by busybox and
+# iproute2, so parse that instead of branching per OS.
+container_ip() { ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | cut -d' ' -f2; }
 
 AGH_DIR="/opt/AdGuardHome"
 AGH_BIN="${AGH_DIR}/AdGuardHome"
@@ -554,12 +586,52 @@ resolve_storage() {
   printf '%s\n' "$candidates" | head -n1
 }
 
-# Container templates are named like: debian-13-standard_13.6-1_arm64.tar.zst
-# TEMPLATE_PATTERN matches the leading name part, and the default deliberately
-# accepts *any* Debian major version — pinning "debian-12" means the script
-# breaks on a host whose mirror only offers 13, which is exactly what a current
-# PVE 9 arm64 install looks like.
-template_regex() { printf '^%s_[^_]*_%s\.tar\.(zst|gz)$' "$TEMPLATE_PATTERN" "$1"; }
+# ---------------------------------------------------------------------------
+# OS support. A case statement rather than an associative array, because
+# associative arrays need bash 4 and this project stays parseable on the
+# bash 3.2 that ships on macOS (see CONTRIBUTING.md). Add a new OS by adding
+# one case to each of the three functions below.
+# ---------------------------------------------------------------------------
+
+# Friendly name for prompts and the plan box.
+os_label() {
+  case "$1" in
+    debian) printf 'Debian 13' ;;
+    alpine) printf 'Alpine 3.24' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# Matches the template name up through the variant, e.g.
+# debian-13-standard_13.6-1_arm64.tar.zst or
+# alpine-3.24-default_20260803_arm64.tar.xz — deliberately not pinned to one
+# minor/point version, since a host's mirror snapshot moves independently of
+# this script and pinning "debian-12" is exactly how a script breaks on a
+# host whose mirror only carries 13 (see the arm64 test host this was found
+# on). $2 is the file extension: Debian ships .tar.zst, Alpine ships .tar.xz.
+os_template_pattern() {
+  case "$1" in
+    debian) printf 'debian-[0-9]+-standard' ;;
+    alpine) printf 'alpine-[0-9]+\.[0-9]+-default' ;;
+    *) die "unknown OS '${1}'" ;;
+  esac
+}
+
+# What has to be true inside a *fresh* container before our own bash-based
+# manage.sh can even be interpreted, let alone run — this has to be plain
+# POSIX sh, not bash, because on Alpine bash is exactly the thing being
+# installed. Debian's standard template already ships bash, so its bootstrap
+# is just the curl check already needed for the vendor installers; Alpine's
+# base image has neither bash nor curl, only busybox ash, apk and wget.
+os_bootstrap_cmd() {
+  case "$1" in
+    debian) printf '%s' 'command -v curl >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq curl)' ;;
+    alpine) printf '%s' 'apk update -q >/dev/null 2>&1; command -v bash >/dev/null 2>&1 || apk add -q bash; command -v curl >/dev/null 2>&1 || apk add -q curl' ;;
+    *) die "unknown OS '${1}'" ;;
+  esac
+}
+
+template_regex() { printf '^%s_[^_]*_%s\.tar\.(zst|gz|xz)$' "$TEMPLATE_PATTERN" "$1"; }
 
 cached_template_files() {
   pveam list "$TEMPLATE_STORAGE" 2>/dev/null | awk 'NR>1 {print $1}' | sed 's|.*/||'
@@ -579,7 +651,7 @@ ensure_template() {
   fi
 
   rx="$(template_regex "$arch")"
-  info "looking for a ${TEMPLATE_LABEL} (${arch}) container template"
+  info "looking for a ${OS_LABEL} (${arch}) container template"
 
   # Check what is already downloaded *before* touching the network. A template
   # sitting in local:vztmpl makes the whole appliance-mirror question moot, and
@@ -600,7 +672,7 @@ ensure_template() {
   best="$(printf '%s\n%s\n' "$cached" "$avail" | grep -v '^$' | sort -V | tail -n1 || true)"
 
   if [[ -z "$best" ]]; then
-    warn "no ${TEMPLATE_LABEL} template for arch '${arch}' is cached or offered (pattern: ${TEMPLATE_PATTERN})."
+    warn "no ${OS_LABEL} template for arch '${arch}' is cached or offered (pattern: ${TEMPLATE_PATTERN})."
     warn "cached on ${TEMPLATE_STORAGE}:"
     cached_template_files | sed 's/^/      /' >&2 || true
     warn "offered by the appliance list for ${arch}:"
@@ -647,19 +719,23 @@ build_net_arg() {
   fi
 }
 
-# Success here means more than "the CT booted": it means DNS, routing and apt
-# all work, which is the thing every installer downstream actually depends on.
+# Success here means more than "the CT booted": it means DNS, routing and the
+# package manager all work, which is what every installer downstream actually
+# depends on. Runs via `sh -c`, not bash — on a fresh Alpine container bash is
+# exactly what this step installs, so the bootstrap command itself must be
+# plain POSIX shell.
 wait_for_network() {
-  local ctid="$1" tries=30
+  local ctid="$1" os_id="$2" tries=30 cmd
+  cmd="$(os_bootstrap_cmd "$os_id")"
   info "waiting for container networking"
   while (( tries > 0 )); do
-    if pct exec "$ctid" -- sh -c 'command -v curl >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq curl)' >/dev/null 2>&1; then
+    if pct exec "$ctid" -- sh -c "$cmd" >/dev/null 2>&1; then
       return 0
     fi
     sleep 2
     tries=$(( tries - 1 ))
   done
-  die "container never came up with working networking/apt"
+  die "container never came up with working networking/package manager"
 }
 
 # Pushes the embedded management script into $ctid, always overwriting so the
@@ -668,13 +744,20 @@ push_manage_script() {
   local ctid="$1" tmp
   tmp="$(mktemp)"
   manage_script > "$tmp"
+  # `pct push` does not create parent directories. Debian's standard template
+  # ships /usr/local/sbin already; Alpine's minimal base does not (only
+  # /usr/local/{bin,lib,share}) — mkdir -p first rather than assume either.
+  pct exec "$ctid" -- mkdir -p "$(dirname "$MANAGE_PATH")"
   pct push "$ctid" "$tmp" "$MANAGE_PATH"
   rm -f "$tmp"
   pct exec "$ctid" -- chmod +x "$MANAGE_PATH"
 }
 
+# `hostname -I` is a GNU-ism; busybox's hostname applet (Alpine) does not
+# support it and errors out. `ip addr show` is implemented identically by
+# busybox and iproute2, so parse that instead of branching per OS.
 container_ip() {
-  pct exec "$1" -- hostname -I 2>/dev/null | awk '{print $1}'
+  pct exec "$1" -- sh -c "ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | cut -d' ' -f2"
 }
 
 create_container() {
@@ -825,6 +908,47 @@ ask_secret() {
   done
 }
 
+# Same shape as ask_choice, but over a space-separated list of OS ids (not
+# newline-separated, since OS_CHOICES is a plain word list elsewhere) and
+# displaying os_label() for each rather than the raw id — the answer returned
+# is still the id ("debian"), never the label, since that is what every OS_ID
+# consumer downstream expects.
+ask_os() {
+  local default="$1" choices="$2" ids id count i answer pick
+
+  ids="$(printf '%s\n' $choices)"
+  count="$(printf '%s\n' "$ids" | grep -c . || true)"
+  if [[ -z "$count" || "$count" -le 1 ]]; then
+    printf '%s' "$default"
+    return 0
+  fi
+
+  printf '\n' >&2
+  i=1
+  for id in $choices; do
+    if [[ "$id" == "$default" ]]; then
+      printf "    %2d) %-8s %s%b  (recommended)%b\n" "$i" "$id" "$(os_label "$id")" "$C_DIM" "$C_RESET" >&2
+    else
+      printf "    %2d) %-8s %s\n" "$i" "$id" "$(os_label "$id")" >&2
+    fi
+    i=$(( i + 1 ))
+  done
+
+  while true; do
+    answer="$(ask "Operating system" "$default")"
+    if [[ "$answer" =~ ^[0-9]+$ ]] && [[ "$answer" -ge 1 && "$answer" -le "$count" ]]; then
+      pick="$(printf '%s\n' "$ids" | sed -n "${answer}p")"
+      printf '%s' "$pick"
+      return 0
+    fi
+    if printf '%s\n' "$ids" | grep -qx -- "$answer"; then
+      printf '%s' "$answer"
+      return 0
+    fi
+    warn "pick a number from the list, or type the OS name exactly"
+  done
+}
+
 # ---------------------------------------------------------------------------
 # Validators. Each explains the problem itself, so ask() can just loop.
 # ---------------------------------------------------------------------------
@@ -877,9 +1001,18 @@ CT_HOSTNAME="${DEFAULT_HOSTNAME}"
 # Empty means "work it out from the host" — see resolve_storage().
 ROOTFS_STORAGE="${DEFAULT_ROOTFS_STORAGE:-}"
 TEMPLATE_STORAGE="${DEFAULT_TEMPLATE_STORAGE:-}"
-TEMPLATE_PATTERN="${DEFAULT_TEMPLATE_PATTERN:-debian-[0-9]+-standard}"
-# TEMPLATE_PATTERN is a regex and reads like one; keep it out of status lines.
-TEMPLATE_LABEL="${DEFAULT_TEMPLATE_LABEL:-Debian}"
+# Which OSes this service can run on, space-separated (os_label/os_template_
+# pattern/os_bootstrap_cmd in lib/pve.sh must know each one), and which one is
+# picked when nothing else says otherwise. A service that never declares
+# DEFAULT_OS_CHOICES gets a single-OS list, so --os and the wizard question
+# both stay silent/absent for it rather than presenting a choice of one.
+OS_CHOICES="${DEFAULT_OS_CHOICES:-${DEFAULT_OS:-debian}}"
+OS_ID="${DEFAULT_OS:-debian}"
+# TEMPLATE_PATTERN/OS_LABEL are derived from OS_ID right before ensure_template
+# runs (see do_create) — not set here, since OS_ID can still change via --os
+# or the wizard after this file is sourced.
+TEMPLATE_PATTERN=""
+OS_LABEL=""
 BRIDGE="${DEFAULT_BRIDGE:-vmbr0}"
 DISK_GB="${DEFAULT_DISK_GB:-4}"
 CORES="${DEFAULT_CORES:-1}"
@@ -934,6 +1067,7 @@ parse_create_args() {
       --static) STATIC_CIDR="$2"; shift 2 ;;
       --gateway) GATEWAY="$2"; shift 2 ;;
       --template) TEMPLATE="$2"; shift 2 ;;
+      --os) OS_ID="$2"; shift 2 ;;
       --password) ROOT_PASSWORD="$2"; shift 2 ;;
       -y|--yes|--defaults) ASSUME_DEFAULTS=1; shift ;;
       -h|--help) usage; exit 0 ;;
@@ -953,7 +1087,18 @@ parse_create_args() {
   if [[ -n "$ROOT_PASSWORD" ]]; then
     v_password "$ROOT_PASSWORD" || die "--password must be at least 8 characters"
   fi
+  if ! os_supported "$OS_ID"; then
+    die "--os must be one of: ${OS_CHOICES} (got '${OS_ID}')"
+  fi
   return 0
+}
+
+os_supported() {
+  local want="$1" id
+  for id in $OS_CHOICES; do
+    [[ "$id" == "$want" ]] && return 0
+  done
+  return 1
 }
 
 # How to tell the user to re-invoke us. When the script was run the piped way
@@ -1012,6 +1157,7 @@ plan_lines() {
   echo ""
   echo " Container ID  : ${CTID}"
   echo " Hostname      : ${CT_HOSTNAME}"
+  echo " Operating sys : $(os_label "$OS_ID")"
   echo " Storage pool  : ${ROOTFS_STORAGE}"
   echo " Disk size     : ${DISK_GB} GB"
   echo " CPU cores     : ${CORES}"
@@ -1036,6 +1182,7 @@ configure_interactive() {
 
   CTID="$(ask "Container ID" "$CTID" v_ctid)"
   CT_HOSTNAME="$(ask "Hostname" "$CT_HOSTNAME" v_hostname)"
+  OS_ID="$(ask_os "$OS_ID" "$OS_CHOICES")"
   ROOTFS_STORAGE="$(ask_choice "Storage pool" "$ROOTFS_STORAGE" "$(storage_options)")"
   DISK_GB="$(ask "Disk size (GB)" "$DISK_GB" v_posint)"
   CORES="$(ask "CPU cores" "$CORES" v_posint)"
@@ -1085,13 +1232,15 @@ do_create() {
   confirm_plan
   [[ -n "$ROOT_PASSWORD" ]] || ROOT_PASSWORD="$(generate_password)"
 
+  TEMPLATE_PATTERN="$(os_template_pattern "$OS_ID")"
+  OS_LABEL="$(os_label "$OS_ID")"
   template="$(ensure_template "$arch")"
   net_arg="$(build_net_arg)"
 
-  info "target: CT ${CTID} (${CT_HOSTNAME}) on ${arch}, rootfs ${ROOTFS_STORAGE}"
+  info "target: CT ${CTID} (${CT_HOSTNAME}) on ${arch}, ${OS_LABEL}, rootfs ${ROOTFS_STORAGE}"
 
   create_container "$CTID" "$template" "$net_arg"
-  wait_for_network "$CTID"
+  wait_for_network "$CTID" "$OS_ID"
   run_step "pushing management script" push_manage_script "$CTID"
 
   info "installing ${SERVICE_NAME}"

@@ -52,12 +52,52 @@ resolve_storage() {
   printf '%s\n' "$candidates" | head -n1
 }
 
-# Container templates are named like: debian-13-standard_13.6-1_arm64.tar.zst
-# TEMPLATE_PATTERN matches the leading name part, and the default deliberately
-# accepts *any* Debian major version — pinning "debian-12" means the script
-# breaks on a host whose mirror only offers 13, which is exactly what a current
-# PVE 9 arm64 install looks like.
-template_regex() { printf '^%s_[^_]*_%s\.tar\.(zst|gz)$' "$TEMPLATE_PATTERN" "$1"; }
+# ---------------------------------------------------------------------------
+# OS support. A case statement rather than an associative array, because
+# associative arrays need bash 4 and this project stays parseable on the
+# bash 3.2 that ships on macOS (see CONTRIBUTING.md). Add a new OS by adding
+# one case to each of the three functions below.
+# ---------------------------------------------------------------------------
+
+# Friendly name for prompts and the plan box.
+os_label() {
+  case "$1" in
+    debian) printf 'Debian 13' ;;
+    alpine) printf 'Alpine 3.24' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# Matches the template name up through the variant, e.g.
+# debian-13-standard_13.6-1_arm64.tar.zst or
+# alpine-3.24-default_20260803_arm64.tar.xz — deliberately not pinned to one
+# minor/point version, since a host's mirror snapshot moves independently of
+# this script and pinning "debian-12" is exactly how a script breaks on a
+# host whose mirror only carries 13 (see the arm64 test host this was found
+# on). $2 is the file extension: Debian ships .tar.zst, Alpine ships .tar.xz.
+os_template_pattern() {
+  case "$1" in
+    debian) printf 'debian-[0-9]+-standard' ;;
+    alpine) printf 'alpine-[0-9]+\.[0-9]+-default' ;;
+    *) die "unknown OS '${1}'" ;;
+  esac
+}
+
+# What has to be true inside a *fresh* container before our own bash-based
+# manage.sh can even be interpreted, let alone run — this has to be plain
+# POSIX sh, not bash, because on Alpine bash is exactly the thing being
+# installed. Debian's standard template already ships bash, so its bootstrap
+# is just the curl check already needed for the vendor installers; Alpine's
+# base image has neither bash nor curl, only busybox ash, apk and wget.
+os_bootstrap_cmd() {
+  case "$1" in
+    debian) printf '%s' 'command -v curl >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq curl)' ;;
+    alpine) printf '%s' 'apk update -q >/dev/null 2>&1; command -v bash >/dev/null 2>&1 || apk add -q bash; command -v curl >/dev/null 2>&1 || apk add -q curl' ;;
+    *) die "unknown OS '${1}'" ;;
+  esac
+}
+
+template_regex() { printf '^%s_[^_]*_%s\.tar\.(zst|gz|xz)$' "$TEMPLATE_PATTERN" "$1"; }
 
 cached_template_files() {
   pveam list "$TEMPLATE_STORAGE" 2>/dev/null | awk 'NR>1 {print $1}' | sed 's|.*/||'
@@ -77,7 +117,7 @@ ensure_template() {
   fi
 
   rx="$(template_regex "$arch")"
-  info "looking for a ${TEMPLATE_LABEL} (${arch}) container template"
+  info "looking for a ${OS_LABEL} (${arch}) container template"
 
   # Check what is already downloaded *before* touching the network. A template
   # sitting in local:vztmpl makes the whole appliance-mirror question moot, and
@@ -98,7 +138,7 @@ ensure_template() {
   best="$(printf '%s\n%s\n' "$cached" "$avail" | grep -v '^$' | sort -V | tail -n1 || true)"
 
   if [[ -z "$best" ]]; then
-    warn "no ${TEMPLATE_LABEL} template for arch '${arch}' is cached or offered (pattern: ${TEMPLATE_PATTERN})."
+    warn "no ${OS_LABEL} template for arch '${arch}' is cached or offered (pattern: ${TEMPLATE_PATTERN})."
     warn "cached on ${TEMPLATE_STORAGE}:"
     cached_template_files | sed 's/^/      /' >&2 || true
     warn "offered by the appliance list for ${arch}:"
@@ -145,19 +185,23 @@ build_net_arg() {
   fi
 }
 
-# Success here means more than "the CT booted": it means DNS, routing and apt
-# all work, which is the thing every installer downstream actually depends on.
+# Success here means more than "the CT booted": it means DNS, routing and the
+# package manager all work, which is what every installer downstream actually
+# depends on. Runs via `sh -c`, not bash — on a fresh Alpine container bash is
+# exactly what this step installs, so the bootstrap command itself must be
+# plain POSIX shell.
 wait_for_network() {
-  local ctid="$1" tries=30
+  local ctid="$1" os_id="$2" tries=30 cmd
+  cmd="$(os_bootstrap_cmd "$os_id")"
   info "waiting for container networking"
   while (( tries > 0 )); do
-    if pct exec "$ctid" -- sh -c 'command -v curl >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq curl)' >/dev/null 2>&1; then
+    if pct exec "$ctid" -- sh -c "$cmd" >/dev/null 2>&1; then
       return 0
     fi
     sleep 2
     tries=$(( tries - 1 ))
   done
-  die "container never came up with working networking/apt"
+  die "container never came up with working networking/package manager"
 }
 
 # Pushes the embedded management script into $ctid, always overwriting so the
@@ -166,13 +210,20 @@ push_manage_script() {
   local ctid="$1" tmp
   tmp="$(mktemp)"
   manage_script > "$tmp"
+  # `pct push` does not create parent directories. Debian's standard template
+  # ships /usr/local/sbin already; Alpine's minimal base does not (only
+  # /usr/local/{bin,lib,share}) — mkdir -p first rather than assume either.
+  pct exec "$ctid" -- mkdir -p "$(dirname "$MANAGE_PATH")"
   pct push "$ctid" "$tmp" "$MANAGE_PATH"
   rm -f "$tmp"
   pct exec "$ctid" -- chmod +x "$MANAGE_PATH"
 }
 
+# `hostname -I` is a GNU-ism; busybox's hostname applet (Alpine) does not
+# support it and errors out. `ip addr show` is implemented identically by
+# busybox and iproute2, so parse that instead of branching per OS.
 container_ip() {
-  pct exec "$1" -- hostname -I 2>/dev/null | awk '{print $1}'
+  pct exec "$1" -- sh -c "ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | cut -d' ' -f2"
 }
 
 create_container() {

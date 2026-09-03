@@ -110,6 +110,47 @@ the guard, a host missing one optional tool prints a confusing "failed at line
 N" during what is only ever meant to be a best-effort probe with a graceful
 fallback.
 
+## Supporting more than one OS
+
+`DEFAULT_OS_CHOICES` in a service's `main.sh` (space-separated, e.g.
+`"debian alpine"`) is all it takes to offer the wizard's "Operating system"
+question and the `--os` flag. `lib/pve.sh` already knows both OSes: template
+pattern and label (`os_label`, `os_template_pattern`), and the plain-`sh`
+bootstrap that gets a stock container to the point your bash `manage.sh` can
+even run on it (`os_bootstrap_cmd` — installs `curl` on Debian, `bash` *and*
+`curl` on Alpine, since Alpine's base image has neither). Add a third OS by
+adding one `case` branch to each of those three functions — not an
+associative array, since this project stays parseable on bash 3.2.
+
+Whether that is *enough* depends entirely on what your `manage.sh` does:
+
+- **If the upstream project's own installer/binary manages its own service**
+  across init systems, you get Alpine for free. AdGuard Home's official
+  installer registers with whatever init system it finds (systemd or OpenRC)
+  and exposes identical `-s start|stop|status` either way — `manage.sh`
+  needed zero OS-specific code, confirmed on a real arm64 Alpine container.
+- **If you write the service unit yourself**, you need two: a systemd unit
+  for Debian, an OpenRC init script for Alpine, selected via something like
+  `[ -x /sbin/openrc-run ]` at install time.
+- **Package names differ.** `ensure_pkg` (in `lib/agent-ui.sh`) detects apk
+  vs apt-get for you, but it can't know that Debian calls something
+  `sqlite3` and Alpine calls it `sqlite` — that's still on the service.
+- **musl isn't glibc.** A vendored binary built against glibc can segfault or
+  refuse to run under Alpine's musl. If the upstream project ships prebuilt
+  binaries, check they actually publish a musl/Alpine build before assuming
+  the same download works.
+
+Verify on a real host before shipping Alpine support, the same as everything
+else in this project: `pveam download` the arm64 (and amd64, if you can) Alpine
+template, `pct create` a throwaway container from it by hand, and confirm your
+actual `cmd_install` works — not that it looks like it should. `busybox` is not
+GNU coreutils: `hostname -I` doesn't exist there (`ip -4 addr show` does, and
+`container_ip()` in both `lib/pve.sh` and `lib/agent-ui.sh` already use it for
+exactly this reason), and `/usr/local/sbin` isn't guaranteed to exist on a
+fresh Alpine image the way it always does on Debian (`push_manage_script` now
+`mkdir -p`s it first — found by `pct push` failing outright on a real Alpine
+container, not by inspection).
+
 ## House rules
 
 These are the things that make the difference between a script that works on

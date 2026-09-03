@@ -12,9 +12,18 @@ CT_HOSTNAME="${DEFAULT_HOSTNAME}"
 # Empty means "work it out from the host" — see resolve_storage().
 ROOTFS_STORAGE="${DEFAULT_ROOTFS_STORAGE:-}"
 TEMPLATE_STORAGE="${DEFAULT_TEMPLATE_STORAGE:-}"
-TEMPLATE_PATTERN="${DEFAULT_TEMPLATE_PATTERN:-debian-[0-9]+-standard}"
-# TEMPLATE_PATTERN is a regex and reads like one; keep it out of status lines.
-TEMPLATE_LABEL="${DEFAULT_TEMPLATE_LABEL:-Debian}"
+# Which OSes this service can run on, space-separated (os_label/os_template_
+# pattern/os_bootstrap_cmd in lib/pve.sh must know each one), and which one is
+# picked when nothing else says otherwise. A service that never declares
+# DEFAULT_OS_CHOICES gets a single-OS list, so --os and the wizard question
+# both stay silent/absent for it rather than presenting a choice of one.
+OS_CHOICES="${DEFAULT_OS_CHOICES:-${DEFAULT_OS:-debian}}"
+OS_ID="${DEFAULT_OS:-debian}"
+# TEMPLATE_PATTERN/OS_LABEL are derived from OS_ID right before ensure_template
+# runs (see do_create) — not set here, since OS_ID can still change via --os
+# or the wizard after this file is sourced.
+TEMPLATE_PATTERN=""
+OS_LABEL=""
 BRIDGE="${DEFAULT_BRIDGE:-vmbr0}"
 DISK_GB="${DEFAULT_DISK_GB:-4}"
 CORES="${DEFAULT_CORES:-1}"
@@ -69,6 +78,7 @@ parse_create_args() {
       --static) STATIC_CIDR="$2"; shift 2 ;;
       --gateway) GATEWAY="$2"; shift 2 ;;
       --template) TEMPLATE="$2"; shift 2 ;;
+      --os) OS_ID="$2"; shift 2 ;;
       --password) ROOT_PASSWORD="$2"; shift 2 ;;
       -y|--yes|--defaults) ASSUME_DEFAULTS=1; shift ;;
       -h|--help) usage; exit 0 ;;
@@ -88,7 +98,18 @@ parse_create_args() {
   if [[ -n "$ROOT_PASSWORD" ]]; then
     v_password "$ROOT_PASSWORD" || die "--password must be at least 8 characters"
   fi
+  if ! os_supported "$OS_ID"; then
+    die "--os must be one of: ${OS_CHOICES} (got '${OS_ID}')"
+  fi
   return 0
+}
+
+os_supported() {
+  local want="$1" id
+  for id in $OS_CHOICES; do
+    [[ "$id" == "$want" ]] && return 0
+  done
+  return 1
 }
 
 # How to tell the user to re-invoke us. When the script was run the piped way
@@ -147,6 +168,7 @@ plan_lines() {
   echo ""
   echo " Container ID  : ${CTID}"
   echo " Hostname      : ${CT_HOSTNAME}"
+  echo " Operating sys : $(os_label "$OS_ID")"
   echo " Storage pool  : ${ROOTFS_STORAGE}"
   echo " Disk size     : ${DISK_GB} GB"
   echo " CPU cores     : ${CORES}"
@@ -171,6 +193,7 @@ configure_interactive() {
 
   CTID="$(ask "Container ID" "$CTID" v_ctid)"
   CT_HOSTNAME="$(ask "Hostname" "$CT_HOSTNAME" v_hostname)"
+  OS_ID="$(ask_os "$OS_ID" "$OS_CHOICES")"
   ROOTFS_STORAGE="$(ask_choice "Storage pool" "$ROOTFS_STORAGE" "$(storage_options)")"
   DISK_GB="$(ask "Disk size (GB)" "$DISK_GB" v_posint)"
   CORES="$(ask "CPU cores" "$CORES" v_posint)"
@@ -220,13 +243,15 @@ do_create() {
   confirm_plan
   [[ -n "$ROOT_PASSWORD" ]] || ROOT_PASSWORD="$(generate_password)"
 
+  TEMPLATE_PATTERN="$(os_template_pattern "$OS_ID")"
+  OS_LABEL="$(os_label "$OS_ID")"
   template="$(ensure_template "$arch")"
   net_arg="$(build_net_arg)"
 
-  info "target: CT ${CTID} (${CT_HOSTNAME}) on ${arch}, rootfs ${ROOTFS_STORAGE}"
+  info "target: CT ${CTID} (${CT_HOSTNAME}) on ${arch}, ${OS_LABEL}, rootfs ${ROOTFS_STORAGE}"
 
   create_container "$CTID" "$template" "$net_arg"
-  wait_for_network "$CTID"
+  wait_for_network "$CTID" "$OS_ID"
   run_step "pushing management script" push_manage_script "$CTID"
 
   info "installing ${SERVICE_NAME}"

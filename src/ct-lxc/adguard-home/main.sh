@@ -3,9 +3,10 @@
 # adguard-home-lxc.sh — AdGuard Home on Proxmox VE, create to teardown.
 # Run this on a PVE host, as root.
 #
-#   create              Create a Debian LXC (newest Debian template the host
-#                       has or can fetch, matching its own architecture —
-#                       amd64 or arm64) and install AdGuard Home inside it
+#   create              Create an LXC (Debian by default, or Alpine with
+#                       --os alpine — newest template the host has or can
+#                       fetch, matching its own architecture: amd64 or
+#                       arm64) and install AdGuard Home inside it
 #   update <ctid>       Safely update AdGuard Home on an existing container:
 #                       backs up config/data, lets the upstream installer do
 #                       its reinstall, restores config/data, and rolls back
@@ -24,6 +25,9 @@
 #   -y, --defaults         Skip the questions and use the recommended values
 #   -i, --id <id>          Container ID (default: next free ID)
 #   -n, --hostname <name>  Container hostname (default: adguardhome)
+#   --os <name>             debian (default) or alpine — Alpine boots faster
+#                           and has a smaller footprint; Debian has the wider
+#                           package ecosystem if you ever exec into the box
 #   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
 #   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
 #   -b, --bridge <name>    Network bridge (default: vmbr0)
@@ -38,6 +42,7 @@
 #   --channel <name>       AdGuard Home channel: release, beta, edge
 #   --template <spec>      Skip template auto-detection entirely, e.g.
 #                           local:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst
+#                           or local:vztmpl/alpine-3.24-default_arm64.tar.xz
 #                           (rarely needed — detection already falls back to
 #                           templates already cached on the host when the
 #                           appliance mirror is broken or unreachable)
@@ -63,6 +68,14 @@ DEFAULT_HOSTNAME="adguard"
 DEFAULT_DISK_GB="2"
 DEFAULT_CORES="1"
 DEFAULT_MEMORY_MB="512"
+# AdGuard Home's own installer registers itself with whatever init system it
+# finds (systemd on Debian, OpenRC on Alpine) and exposes identical `-s
+# start|stop|status` control either way, so manage.sh below needed zero
+# OS-specific code to support this — verified on a real arm64 Alpine
+# container, not assumed. Debian stays the recommended default: longer track
+# record in this project, and apt if you ever need to exec in and debug.
+DEFAULT_OS="debian"
+DEFAULT_OS_CHOICES="debian alpine"
 # Every client on the LAN ends up pointed at this container's address, so a
 # lease that can change is a footgun. The prompt defaults to yes accordingly.
 DEFAULT_PREFER_STATIC="y"

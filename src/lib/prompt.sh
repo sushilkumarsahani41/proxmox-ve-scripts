@@ -131,6 +131,47 @@ ask_secret() {
   done
 }
 
+# Same shape as ask_choice, but over a space-separated list of OS ids (not
+# newline-separated, since OS_CHOICES is a plain word list elsewhere) and
+# displaying os_label() for each rather than the raw id — the answer returned
+# is still the id ("debian"), never the label, since that is what every OS_ID
+# consumer downstream expects.
+ask_os() {
+  local default="$1" choices="$2" ids id count i answer pick
+
+  ids="$(printf '%s\n' $choices)"
+  count="$(printf '%s\n' "$ids" | grep -c . || true)"
+  if [[ -z "$count" || "$count" -le 1 ]]; then
+    printf '%s' "$default"
+    return 0
+  fi
+
+  printf '\n' >&2
+  i=1
+  for id in $choices; do
+    if [[ "$id" == "$default" ]]; then
+      printf "    %2d) %-8s %s%b  (recommended)%b\n" "$i" "$id" "$(os_label "$id")" "$C_DIM" "$C_RESET" >&2
+    else
+      printf "    %2d) %-8s %s\n" "$i" "$id" "$(os_label "$id")" >&2
+    fi
+    i=$(( i + 1 ))
+  done
+
+  while true; do
+    answer="$(ask "Operating system" "$default")"
+    if [[ "$answer" =~ ^[0-9]+$ ]] && [[ "$answer" -ge 1 && "$answer" -le "$count" ]]; then
+      pick="$(printf '%s\n' "$ids" | sed -n "${answer}p")"
+      printf '%s' "$pick"
+      return 0
+    fi
+    if printf '%s\n' "$ids" | grep -qx -- "$answer"; then
+      printf '%s' "$answer"
+      return 0
+    fi
+    warn "pick a number from the list, or type the OS name exactly"
+  done
+}
+
 # ---------------------------------------------------------------------------
 # Validators. Each explains the problem itself, so ask() can just loop.
 # ---------------------------------------------------------------------------

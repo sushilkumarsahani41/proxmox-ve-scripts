@@ -21,15 +21,29 @@ trap 'die "failed at line $LINENO (exit code $?)"' ERR
 
 require_root() { [[ "$(id -u)" -eq 0 ]] || die "must be run as root"; }
 
+# apk (Alpine) or apt-get (Debian) — whichever is actually on this container,
+# not whichever OS a service author assumed. Package *names* can still differ
+# between the two (this only saves you from the manager itself), so a service
+# that needs something Debian calls `sqlite3` and Alpine calls `sqlite` still
+# has to know that.
 ensure_pkg() {
   local missing=() pkg
   for pkg in "$@"; do
     command -v "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
   done
   [[ ${#missing[@]} -eq 0 ]] && return 0
-  command -v apt-get >/dev/null 2>&1 || die "missing: ${missing[*]} (and apt-get is not available to install them)"
-  apt-get update -qq
-  apt-get install -y -qq "${missing[@]}"
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -qq
+    apt-get install -y -qq "${missing[@]}"
+  elif command -v apk >/dev/null 2>&1; then
+    apk update -q
+    apk add -q "${missing[@]}"
+  else
+    die "missing: ${missing[*]} (no apt-get or apk available to install them)"
+  fi
 }
 
-container_ip() { hostname -I 2>/dev/null | awk '{print $1}'; }
+# `hostname -I` is a GNU-ism; busybox's hostname applet (Alpine) does not
+# support it. `ip addr show` is implemented identically by busybox and
+# iproute2, so parse that instead of branching per OS.
+container_ip() { ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | cut -d' ' -f2; }

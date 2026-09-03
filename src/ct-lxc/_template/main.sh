@@ -20,6 +20,8 @@
 #   -y, --defaults         Skip the questions and use the recommended values
 #   -i, --id <id>          Container ID (default: next free ID)
 #   -n, --hostname <name>  Container hostname (default: myservice)
+#   --os <name>             debian (default) — see DEFAULT_OS_CHOICES below to
+#                           also offer alpine
 #   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
 #   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
 #   -b, --bridge <name>    Network bridge (default: vmbr0)
@@ -54,11 +56,28 @@ DEFAULT_MEMORY_MB="512"
 # Optional, only if the defaults don't suit:
 #   DEFAULT_ROOTFS_STORAGE="local-lvm"    # default: auto-detected
 #   DEFAULT_TEMPLATE_STORAGE="local"      # default: auto-detected
-#   DEFAULT_TEMPLATE_PATTERN="debian-13-standard"   # pin a major version
 #   DEFAULT_BRIDGE="vmbr0"
 #   DEFAULT_UNPRIVILEGED="1"     # 0 for things needing host devices
 #   DEFAULT_NESTING="0"          # 1 for anything running Docker inside
 #   DEFAULT_PREFER_STATIC="y"    # default answer to the static-IP question
+#
+# OS support. Every service gets Debian for free; add Alpine too by listing
+# it here (both are already wired into lib/pve.sh: template pattern, arch,
+# the bootstrap that installs bash+curl on a stock Alpine image before your
+# manage.sh can even run). Whether that is actually enough depends on what
+# manage.sh does below it:
+#   - If the upstream project's own installer/binary manages its own service
+#     across init systems (AdGuard Home does — same `-s start|stop|status`
+#     on OpenRC as on systemd), manage.sh needs no OS-specific code at all.
+#   - If you write the service unit yourself, you need two: a systemd unit
+#     for Debian and an OpenRC init script for Alpine, chosen by `[ -x
+#     /sbin/openrc-run ]` or similar at install time.
+# Verify Alpine for real before shipping it — pveam download the arm64 alpine
+# template, pct create a throwaway container from it, and confirm your
+# manage.sh's cmd_install actually works. Don't add it on the strength of it
+# looking like it should.
+#   DEFAULT_OS="debian"
+#   DEFAULT_OS_CHOICES="debian alpine"
 
 # @usage
 # @embed ct-lxc/_template/manage.sh AS manage_script

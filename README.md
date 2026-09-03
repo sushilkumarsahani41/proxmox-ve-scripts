@@ -48,20 +48,24 @@ bash <(curl -fsSL https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-
 That's the only URL worth remembering — it lists everything available and lets
 you pick. On a real terminal with nothing else specified, `create` then walks
 through each setting one at a time, showing the recommended value in brackets
-— container ID, hostname, storage pool (only pools this host actually has),
-disk size, cores, memory, network bridge, and static-IP/gateway if you want
-one — with Enter accepting the default and a plan shown before anything is
-touched:
+— container ID, hostname, **operating system** (if the service offers more
+than one), storage pool (only pools this host actually has), disk size,
+cores, memory, network bridge, and static-IP/gateway if you want one — with
+Enter accepting the default and a plan shown before anything is touched:
 
 ```
   Container ID [100]:
   Hostname [adguardhome]:
+
+    1) debian    Debian 13  (recommended)
+    2) alpine    Alpine 3.24
+  Operating system [debian]: 2
   Storage pool [local-lvm]:
 
     1) local-lvm  (recommended)
     2) local-zfs
   Storage pool: 2
-  Disk size (GB) [4]:
+  Disk size (GB) [2]:
   ...
 
 +-----------------------------------------------------------------+
@@ -121,7 +125,7 @@ Every script takes `--help`.
 
 | Service | Script | Notes |
 |---|---|---|
-| AdGuard Home | [`adguard-home-lxc.sh`](ct-lxc/adguard-home-lxc.sh) | Network-wide DNS ad blocking. `--channel release\|beta\|edge`. Use `--static` — every client will point at this IP. |
+| AdGuard Home | [`adguard-home-lxc.sh`](ct-lxc/adguard-home-lxc.sh) | Network-wide DNS ad blocking. `--channel release\|beta\|edge`. `--os debian\|alpine`. Use `--static` — every client will point at this IP. |
 
 ### Virtual machines — [`vm/`](vm/)
 
@@ -139,6 +143,7 @@ Every `create` accepts these:
 |---|---|---|
 | `-i, --id <id>` | next free | Container ID |
 | `-n, --hostname <name>` | per service | Container hostname |
+| `--os <name>` | per service | Guest OS, if the service offers more than one — see its own table row |
 | `-s, --storage <name>` | auto-detected | Storage for the rootfs |
 | `-t, --template-storage <name>` | auto-detected | Where CT templates live |
 | `-b, --bridge <name>` | `vmbr0` | Network bridge |
@@ -155,20 +160,42 @@ Every `create` accepts these:
 template you already have:
 `--template local:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst`
 
+## Multiple guest OSes
+
+A service can offer a choice of base OS instead of only Debian. AdGuard Home
+offers both:
+
+| OS | Why you'd pick it |
+|---|---|
+| Debian 13 (default) | Longest track record in this project; `apt` if you ever need to exec in and debug |
+| Alpine 3.24 | Smaller footprint, faster boot; musl + OpenRC instead of glibc + systemd |
+
+This works because AdGuard Home's own installer registers itself with
+whatever init system it finds and exposes the same `-s start|stop|status`
+either way — the service's `manage.sh` needed zero OS-specific code. That
+won't be true of every future service; see `src/ct-lxc/_template/main.sh`
+for what Alpine support actually requires before you add it to one.
+
 ## Tested on
 
 `ct-lxc/adguard-home-lxc.sh` was verified end-to-end — create, status, update,
-uninstall, uninstall --purge, and the failure paths — on:
+uninstall, uninstall --purge, both OSes, and the failure paths — on:
 
 | | |
 |---|---|
 | Host | Raspberry Pi 5, Proxmox VE 9.0.10, arm64 |
 | Storage | single `local` dir storage (no `local-lvm`) |
-| Template | `debian-13-standard_13.6-1_arm64` |
+| Templates | `debian-13-standard_13.6-1_arm64`, `alpine-3.24-default_20260803_arm64` |
 | Networking | both DHCP and `--static` |
 
 That host has a broken appliance mirror, which is how the cached-template
-fallback earned its place.
+fallback earned its place. Its official catalog also carries very few arm64
+templates at all — as of writing, exactly two: Debian 13 and Alpine 3.24 —
+which is a genuine limit of Proxmox's curated template list, not something a
+`pveam` flag unlocks. `pveam available` (no `--section` filter) already
+returns everything the mirror has; this project's own `--section system`
+filter only excludes irrelevant sections (mail server appliances,
+TurnkeyLinux installers), never architectures.
 
 ## How this repo is built
 

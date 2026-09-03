@@ -246,10 +246,10 @@ for script_path in ${scripts[@]+"${scripts[@]}"}; do
   # error into the transcript.
   if command -v python3 >/dev/null 2>&1; then
     wiz_cmd="set +u; source '$lib' >/dev/null 2>&1; CTID=105; CT_HOSTNAME=adguardhome; ROOTFS_STORAGE=local; DISK_GB=4; CORES=1; MEMORY_MB=512; BRIDGE=vmbr0; CHANNEL=release; configure_interactive; echo WIZ-HOST=\$CT_HOSTNAME; echo WIZ-MEM=\$MEMORY_MB; echo WIZ-STATIC=\$STATIC_CIDR; echo WIZ-DONE"
-    # ...static?[default y]->accept, CIDR(bad,rejected), CIDR(good), gateway,
-    # auto-generate password?[default y]->accept, then the service's own
-    # svc_prompt question (channel).
-    wiz_steps=$'\nmydns\n\n\n1024\n\nnotanip\n192.168.9.53/24\n192.168.9.1\n\nbeta'
+    # ...OS?[default debian]->accept, static?[default y]->accept,
+    # CIDR(bad,rejected), CIDR(good), gateway, auto-generate password?
+    # [default y]->accept, then the service's own svc_prompt (channel).
+    wiz_steps=$'\nmydns\n\n\n\n1024\n\nnotanip\n192.168.9.53/24\n192.168.9.1\n\nbeta'
     out="$(run_in_pty_scripted "$wiz_cmd" "WIZ-DONE" "$wiz_steps" 2>&1 || true)"
     if printf '%s' "$out" | grep -q '\[x\]'; then
       fail "$name wizard prints no spurious errors on a full pass ($(printf '%s' "$out" | grep '\[x\]' | head -1))"
@@ -269,15 +269,32 @@ for script_path in ${scripts[@]+"${scripts[@]}"}; do
       fail "$name wizard re-asks on an invalid CIDR"
     fi
 
+    # Picking Alpine explicitly (by number, not just accepting the Debian
+    # default) must actually reach OS_ID — and, downstream, the TEMPLATE_
+    # PATTERN that os_template_pattern derives from it. Wrong result here
+    # would mean --os and the wizard disagree about which OS a run used.
+    os_cmd="set +u; source '$lib' >/dev/null 2>&1; CTID=106; CT_HOSTNAME=adguardhome; ROOTFS_STORAGE=local; DISK_GB=4; CORES=1; MEMORY_MB=512; BRIDGE=vmbr0; CHANNEL=release; configure_interactive >/dev/null; echo OS-RESULT=\$OS_ID; echo OS-DONE"
+    # CTID/hostname accept, OS pick "2" (alpine, by number), disk/cores/mem
+    # accept, decline static, decline auto-password, short/mismatch/good
+    # password, then channel.
+    os_steps=$'\n\n2\n\n\n\nn\nn\nshortpw\nCorrectHorse1\nWrongConfirm\nCorrectHorse1\nCorrectHorse1\nrelease'
+    os_out="$(run_in_pty_scripted "$os_cmd" "OS-DONE" "$os_steps" 2>&1 || true)"
+    if printf '%s' "$os_out" | grep -q 'OS-RESULT=alpine'; then
+      pass "$name wizard: picking Alpine by number sets OS_ID=alpine"
+    else
+      fail "$name wizard: picking Alpine by number sets OS_ID=alpine"
+    fi
+
     # The custom-password branch (ask_secret): decline auto-generate, mistype
     # the confirmation once, then get it right. Exercises hidden input and the
     # length validator in the same pass.
-    pw_cmd="set +u; source '$lib' >/dev/null 2>&1; CTID=105; CT_HOSTNAME=adguardhome; ROOTFS_STORAGE=local; DISK_GB=4; CORES=1; MEMORY_MB=512; BRIDGE=vmbr0; CHANNEL=release; configure_interactive >/dev/null; echo PW-RESULT=\$ROOT_PASSWORD; echo PW-DONE"
-    # CTID/hostname/disk/cores/memory accept defaults, decline static IP (this
-    # service defaults that question to yes, so it must be answered explicitly
-    # or the next two steps get consumed as a CIDR/gateway instead), decline
-    # auto-generate, then the short/mismatch/good password sequence.
-    pw_steps=$'\n\n\n\n\nn\nn\nshortpw\nCorrectHorse1\nWrongConfirm\nCorrectHorse1\nCorrectHorse1\nrelease'
+    pw_cmd="set +u; source '$lib' >/dev/null 2>&1; CTID=105; CT_HOSTNAME=adguardhome; OS_ID=debian; ROOTFS_STORAGE=local; DISK_GB=4; CORES=1; MEMORY_MB=512; BRIDGE=vmbr0; CHANNEL=release; configure_interactive >/dev/null; echo PW-RESULT=\$ROOT_PASSWORD; echo PW-DONE"
+    # CTID/hostname/OS/disk/cores/memory accept defaults, decline static IP
+    # (this service defaults that question to yes, so it must be answered
+    # explicitly or the next two steps get consumed as a CIDR/gateway
+    # instead), decline auto-generate, then the short/mismatch/good password
+    # sequence.
+    pw_steps=$'\n\n\n\n\n\nn\nn\nshortpw\nCorrectHorse1\nWrongConfirm\nCorrectHorse1\nCorrectHorse1\nrelease'
     pw_out="$(run_in_pty_scripted "$pw_cmd" "PW-DONE" "$pw_steps" 2>&1 || true)"
     if printf '%s' "$pw_out" | grep -q 'PW-RESULT=CorrectHorse1'; then
       pass "$name wizard: custom password accepted after a short one and a mismatched confirmation"
@@ -303,6 +320,42 @@ for script_path in ${scripts[@]+"${scripts[@]}"}; do
   done
   if [[ "$pwfail" -eq 0 ]]; then pass "$name generate_password survives SIGPIPE from head across 15 runs"
   else fail "$name generate_password survives SIGPIPE from head across 15 runs (got: len=${#pw} '$pw')"; fi
+
+  # OS support: the case-based helpers in lib/pve.sh, not a bash-4
+  # associative array (this project stays parseable on bash 3.2 — see
+  # CONTRIBUTING.md), so a typo in one branch is otherwise invisible until a
+  # real host hits it.
+  osfail=0
+  for id in debian alpine; do
+    label="$( ( set +u; source "$lib" >/dev/null 2>&1; os_label "$id" ) 2>&1 )"
+    pattern="$( ( set +u; source "$lib" >/dev/null 2>&1; os_template_pattern "$id" ) 2>&1 )"
+    bootstrap="$( ( set +u; source "$lib" >/dev/null 2>&1; os_bootstrap_cmd "$id" ) 2>&1 )"
+    [[ -n "$label" && "$label" != *'[x]'* ]] || { osfail=1; fail "$name os_label('$id') = '$label'"; }
+    [[ -n "$pattern" && "$pattern" != *'[x]'* ]] || { osfail=1; fail "$name os_template_pattern('$id') = '$pattern'"; }
+    [[ -n "$bootstrap" && "$bootstrap" != *'[x]'* ]] || { osfail=1; fail "$name os_bootstrap_cmd('$id') = '$bootstrap'"; }
+  done
+  # The two bootstrap commands must actually differ (apt vs apk) — identical
+  # output here would mean Alpine silently got Debian's, which fails loudly
+  # only once someone runs --os alpine against a real host.
+  deb_boot="$( ( set +u; source "$lib" >/dev/null 2>&1; os_bootstrap_cmd debian ) 2>&1 )"
+  alp_boot="$( ( set +u; source "$lib" >/dev/null 2>&1; os_bootstrap_cmd alpine ) 2>&1 )"
+  if [[ "$deb_boot" == *apt-get* && "$alp_boot" == *apk* && "$deb_boot" != "$alp_boot" ]]; then
+    pass "$name debian and alpine bootstrap commands actually differ (apt vs apk)"
+  else
+    fail "$name debian and alpine bootstrap commands actually differ (apt vs apk)"
+  fi
+  [[ "$osfail" -eq 0 ]] && pass "$name os_label/os_template_pattern/os_bootstrap_cmd cover debian and alpine"
+
+  # An unknown OS must be rejected at argument-parse time — before any pct/pvesm
+  # call — not three steps into create after a container already exists. Check
+  # the actual message, not just a non-zero exit: this must fail *because* the
+  # OS is unknown, not because pct happens to be missing on this machine too.
+  osargs_out="$("$script_path" create --os solaris 2>&1)"; osargs_rc=$?
+  if [[ "$osargs_rc" -ne 0 ]] && printf '%s' "$osargs_out" | grep -q -- '--os must be one of'; then
+    pass "$name rejects an unknown --os before touching the host"
+  else
+    fail "$name rejects an unknown --os before touching the host (rc=$osargs_rc: $osargs_out)"
+  fi
 
   # Validators are the whole reason a typo does not become a broken container.
   bad=0
