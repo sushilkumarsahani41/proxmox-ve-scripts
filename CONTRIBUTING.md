@@ -151,6 +151,33 @@ fresh Alpine image the way it always does on Debian (`push_manage_script` now
 `mkdir -p`s it first — found by `pct push` failing outright on a real Alpine
 container, not by inspection).
 
+## Getting an interactive vendor installer to run unattended
+
+Some upstream installers (Pi-hole's is the example in this repo) are a
+sequence of `dialog`/`whiptail` screens with no flag that skips them —
+`--unattended`-style flags on these often only silence the *package
+manager's* prompts (`DEBIAN_FRONTEND=noninteractive` and similar), not the
+installer's own dialogs. Don't assume such a flag means what it sounds like;
+read the installer's source for what actually gates the dialogs before
+trusting a flag name.
+
+The pattern that reliably works, found by reading Pi-hole's real installer
+source rather than its docs: these installers usually decide whether to run
+the interactive wizard based on whether *their own config file already
+exists*. Fresh install (no config) → wizard. Config present → treated as an
+update/repair, wizard skipped entirely. So the recipe is: write a minimal,
+valid config file to wherever the installer expects one, in whatever format
+it currently reads (check for both a legacy format and a newer one — Pi-hole
+migrated from `setupVars.conf` to a TOML file between major versions, and
+still accepts the legacy one specifically to migrate it), *then* run the
+installer. See `seed_setup_vars` in `src/ct-lxc/pi-hole/manage.sh` for a
+concrete example, including which keys turned out to matter.
+
+Verify this for real, the same as everything else here — the exact config
+keys required, and whether they're even honored the way the (possibly
+outdated) documentation says, are exactly the kind of thing that changes
+between major versions without warning.
+
 ## House rules
 
 These are the things that make the difference between a script that works on

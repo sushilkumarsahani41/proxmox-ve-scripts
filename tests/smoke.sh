@@ -248,8 +248,10 @@ for script_path in ${scripts[@]+"${scripts[@]}"}; do
     wiz_cmd="set +u; source '$lib' >/dev/null 2>&1; CTID=105; CT_HOSTNAME=adguardhome; ROOTFS_STORAGE=local; DISK_GB=4; CORES=1; MEMORY_MB=512; BRIDGE=vmbr0; CHANNEL=release; configure_interactive; echo WIZ-HOST=\$CT_HOSTNAME; echo WIZ-MEM=\$MEMORY_MB; echo WIZ-STATIC=\$STATIC_CIDR; echo WIZ-DONE"
     # ...OS?[default debian]->accept, static?[default y]->accept,
     # CIDR(bad,rejected), CIDR(good), gateway, auto-generate password?
-    # [default y]->accept, then the service's own svc_prompt (channel).
-    wiz_steps=$'\nmydns\n\n\n\n1024\n\nnotanip\n192.168.9.53/24\n192.168.9.1\n\nbeta'
+    # [default y]->accept, then whatever the service's own svc_prompt asks
+    # (channel, upstream DNS, ...) — accepting ITS default too, since this
+    # runs against every service and each one asks something different.
+    wiz_steps=$'\nmydns\n\n\n\n1024\n\nnotanip\n192.168.9.53/24\n192.168.9.1\n\n\n'
     out="$(run_in_pty_scripted "$wiz_cmd" "WIZ-DONE" "$wiz_steps" 2>&1 || true)"
     if printf '%s' "$out" | grep -q '\[x\]'; then
       fail "$name wizard prints no spurious errors on a full pass ($(printf '%s' "$out" | grep '\[x\]' | head -1))"
@@ -276,8 +278,9 @@ for script_path in ${scripts[@]+"${scripts[@]}"}; do
     os_cmd="set +u; source '$lib' >/dev/null 2>&1; CTID=106; CT_HOSTNAME=adguardhome; ROOTFS_STORAGE=local; DISK_GB=4; CORES=1; MEMORY_MB=512; BRIDGE=vmbr0; CHANNEL=release; configure_interactive >/dev/null; echo OS-RESULT=\$OS_ID; echo OS-DONE"
     # CTID/hostname accept, OS pick "2" (alpine, by number), disk/cores/mem
     # accept, decline static, decline auto-password, short/mismatch/good
-    # password, then channel.
-    os_steps=$'\n\n2\n\n\n\nn\nn\nshortpw\nCorrectHorse1\nWrongConfirm\nCorrectHorse1\nCorrectHorse1\nrelease'
+    # password, then accept whatever the service's own svc_prompt defaults
+    # to (differs per service).
+    os_steps=$'\n\n2\n\n\n\nn\nn\nshortpw\nCorrectHorse1\nWrongConfirm\nCorrectHorse1\nCorrectHorse1\n\n'
     os_out="$(run_in_pty_scripted "$os_cmd" "OS-DONE" "$os_steps" 2>&1 || true)"
     if printf '%s' "$os_out" | grep -q 'OS-RESULT=alpine'; then
       pass "$name wizard: picking Alpine by number sets OS_ID=alpine"
@@ -293,8 +296,8 @@ for script_path in ${scripts[@]+"${scripts[@]}"}; do
     # (this service defaults that question to yes, so it must be answered
     # explicitly or the next two steps get consumed as a CIDR/gateway
     # instead), decline auto-generate, then the short/mismatch/good password
-    # sequence.
-    pw_steps=$'\n\n\n\n\n\nn\nn\nshortpw\nCorrectHorse1\nWrongConfirm\nCorrectHorse1\nCorrectHorse1\nrelease'
+    # sequence, then accept whatever the service's own svc_prompt defaults to.
+    pw_steps=$'\n\n\n\n\n\nn\nn\nshortpw\nCorrectHorse1\nWrongConfirm\nCorrectHorse1\nCorrectHorse1\n\n'
     pw_out="$(run_in_pty_scripted "$pw_cmd" "PW-DONE" "$pw_steps" 2>&1 || true)"
     if printf '%s' "$pw_out" | grep -q 'PW-RESULT=CorrectHorse1'; then
       pass "$name wizard: custom password accepted after a short one and a mismatched confirmation"

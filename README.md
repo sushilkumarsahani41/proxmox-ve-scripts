@@ -126,6 +126,7 @@ Every script takes `--help`.
 | Service | Script | Notes |
 |---|---|---|
 | AdGuard Home | [`adguard-home-lxc.sh`](ct-lxc/adguard-home-lxc.sh) | Network-wide DNS ad blocking. `--channel release\|beta\|edge`. `--os debian\|alpine`. Use `--static` — every client will point at this IP. |
+| Pi-hole | [`pi-hole-lxc.sh`](ct-lxc/pi-hole-lxc.sh) | Network-wide DNS ad blocking. `--upstream cloudflare\|google\|quad9\|opendns`. `--os debian\|alpine`. Sets its own admin web password too (`--webpassword`, separate from the container root password) — auto-generated and shown once, same as root. Use `--static`. |
 
 ### Virtual machines — [`vm/`](vm/)
 
@@ -152,7 +153,7 @@ Every `create` accepts these:
 | `-m, --memory <MB>` | per service | RAM |
 | `--static <cidr>` | dhcp | Static IP, e.g. `192.168.1.53/24` |
 | `--gateway <ip>` | — | Required with `--static` |
-| `--password <pass>` | random | Root password (min 8 chars). Shown once after creation if not set. |
+| `--password <pass>` | random | Container root password (min 8 chars). Shown once after creation if not set. A service may have its own separate app-level password too — see its own row above. |
 | `--template <spec>` | auto | Bypass template detection entirely |
 | `-y, --defaults` | — | Skip the wizard, use recommended values |
 
@@ -162,24 +163,30 @@ template you already have:
 
 ## Multiple guest OSes
 
-A service can offer a choice of base OS instead of only Debian. AdGuard Home
-offers both:
+A service can offer a choice of base OS instead of only Debian. Both AdGuard
+Home and Pi-hole offer both:
 
 | OS | Why you'd pick it |
 |---|---|
 | Debian 13 (default) | Longest track record in this project; `apt` if you ever need to exec in and debug |
 | Alpine 3.24 | Smaller footprint, faster boot; musl + OpenRC instead of glibc + systemd |
 
-This works because AdGuard Home's own installer registers itself with
-whatever init system it finds and exposes the same `-s start|stop|status`
-either way — the service's `manage.sh` needed zero OS-specific code. That
-won't be true of every future service; see `src/ct-lxc/_template/main.sh`
-for what Alpine support actually requires before you add it to one.
+This works because both services' own installers register themselves with
+whatever init system they find and expose identical control commands either
+way (AdGuard Home: `-s start|stop|status`; Pi-hole: `pihole status`/`-up`) —
+so neither service's `manage.sh` needed OS-specific code. Pi-hole's own
+installer supporting Alpine at all (via `apk`, registering under OpenRC) was
+a genuine surprise found by reading its source, not assumed from AdGuard's
+precedent, and verified the same way: a real throwaway container, not a
+guess. That won't be true of every future service; see
+`src/ct-lxc/_template/main.sh` for what Alpine support actually requires
+before you add it to one.
 
 ## Tested on
 
-`ct-lxc/adguard-home-lxc.sh` was verified end-to-end — create, status, update,
-uninstall, uninstall --purge, both OSes, and the failure paths — on:
+Both `ct-lxc/adguard-home-lxc.sh` and `ct-lxc/pi-hole-lxc.sh` were verified
+end-to-end — create, status, update, uninstall, uninstall --purge, both OSes,
+and the failure paths — on:
 
 | | |
 |---|---|
@@ -196,6 +203,12 @@ which is a genuine limit of Proxmox's curated template list, not something a
 returns everything the mirror has; this project's own `--section system`
 filter only excludes irrelevant sections (mail server appliances,
 TurnkeyLinux installers), never architectures.
+
+For Pi-hole specifically, the admin web password was checked against the
+live Pi-hole v6 REST API (`POST /api/auth`) — not just that `pihole
+setpassword` exited 0 — confirming both that the right password authenticates
+and a wrong one gets HTTP 401, on both OSes, and that the password survives
+`pihole -up`.
 
 ## How this repo is built
 
