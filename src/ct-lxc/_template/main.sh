@@ -17,6 +17,7 @@
 #   ./myservice-lxc.sh status <ctid>
 #
 # create options:
+#   -y, --defaults         Skip the questions and use the recommended values
 #   -i, --id <id>          Container ID (default: next free ID)
 #   -n, --hostname <name>  Container hostname (default: myservice)
 #   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
@@ -54,11 +55,13 @@ DEFAULT_MEMORY_MB="512"
 #   DEFAULT_BRIDGE="vmbr0"
 #   DEFAULT_UNPRIVILEGED="1"     # 0 for things needing host devices
 #   DEFAULT_NESTING="0"          # 1 for anything running Docker inside
+#   DEFAULT_PREFER_STATIC="y"    # default answer to the static-IP question
 
 # @usage
 # @embed ct-lxc/_template/manage.sh AS manage_script
 # @include lib/ui.sh
 # @include lib/pve.sh
+# @include lib/prompt.sh
 # @include lib/main.sh
 
 # ---------------------------------------------------------------------------
@@ -78,6 +81,15 @@ DEFAULT_MEMORY_MB="512"
 
 # Extra arguments passed to `<manage.sh> install` inside the container.
 # svc_install_args() { SVC_INSTALL_ARGS=(--version "$APP_VERSION"); }
+
+# Extra questions during the interactive configure step. Use ask / ask_choice /
+# ask_yesno; each takes the recommended value as its default.
+# svc_prompt() {
+#   APP_PORT="$(ask "Web UI port" "$APP_PORT" v_posint)"
+# }
+
+# Extra " label : value" lines in the pre-create summary box.
+# svc_plan_lines() { echo " Port          : ${APP_PORT}"; }
 
 # Extra " label : value" lines for the closing summary box. $1=ctid $2=ip
 svc_summary_lines() {

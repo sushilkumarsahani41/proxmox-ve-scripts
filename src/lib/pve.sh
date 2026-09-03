@@ -115,6 +115,28 @@ ensure_template() {
   echo "${TEMPLATE_STORAGE}:vztmpl/${best}"
 }
 
+# What this host can actually offer, for the interactive picker. Offering a
+# free-text field for something with three valid answers is how typos become
+# support questions.
+#
+# Each ends in `|| true`: these run inside a bare $(...) substitution (an
+# argument to ask_choice, not an if/while condition), and with errtrace (-E)
+# the ERR trap fires *inside that subshell* for any failing command in it —
+# missing binary, empty grep match, whatever — printing a false "failed at
+# line N" and aborting the probe, even though the caller only wants a best
+# effort and already falls back to the current default on empty input.
+storage_options() {
+  pvesm status --content rootdir 2>/dev/null | awk 'NR>1 && $3=="active" {print $1}' || true
+}
+
+bridge_options() {
+  ip -br link show type bridge 2>/dev/null | awk '{print $1}' || true
+}
+
+host_gateway() {
+  ip route 2>/dev/null | awk '/^default/ {print $3; exit}' || true
+}
+
 build_net_arg() {
   if [[ -n "$STATIC_CIDR" ]]; then
     echo "name=eth0,bridge=${BRIDGE},ip=${STATIC_CIDR},gw=${GATEWAY}"

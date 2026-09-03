@@ -46,11 +46,44 @@ bash <(curl -fsSL https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-
 ```
 
 That's the only URL worth remembering — it lists everything available and lets
-you pick. To skip the menu, name the service and pass whatever options you want:
+you pick. On a real terminal with nothing else specified, `create` then walks
+through each setting one at a time, showing the recommended value in brackets
+— container ID, hostname, storage pool (only pools this host actually has),
+disk size, cores, memory, network bridge, and static-IP/gateway if you want
+one — with Enter accepting the default and a plan shown before anything is
+touched:
+
+```
+  Container ID [100]:
+  Hostname [adguardhome]:
+  Storage pool [local-lvm]:
+
+    1) local-lvm  (recommended)
+    2) local-zfs
+  Storage pool: 2
+  Disk size (GB) [4]:
+  ...
+
++-----------------------------------------------------------------+
+| AdGuard Home - about to create                                  |
+|                                                                  |
+| Container ID  : 100                                             |
+| Storage pool  : local-zfs                                       |
+| Disk size     : 4 GB                                            |
+...
+| Create with these settings? [Y/n]:
+```
+
+Pass any option at all — or `-y`/`--defaults` — and it skips every question and
+runs straight through, so a scripted or piped invocation never blocks waiting
+on a terminal that isn't there:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/install.sh) \
   adguard-home --static 192.168.1.53/24 --gateway 192.168.1.1
+
+bash <(curl -fsSL https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/install.sh) \
+  adguard-home -y
 ```
 
 Service names are hyphenated (`adguard-home`). Older joined names

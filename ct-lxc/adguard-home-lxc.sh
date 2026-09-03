@@ -21,6 +21,7 @@
 #   ./adguard-home-lxc.sh status <ctid>
 #
 # create options:
+#   -y, --defaults         Skip the questions and use the recommended values
 #   -i, --id <id>          Container ID (default: next free ID)
 #   -n, --hostname <name>  Container hostname (default: adguardhome)
 #   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
@@ -38,7 +39,11 @@
 #                           templates already cached on the host when the
 #                           appliance mirror is broken or unreachable)
 #
-# A DNS server wants a fixed address: --static is strongly recommended, since
+# Run with no options on a terminal and it asks about each setting, showing the
+# recommended value in brackets — Enter accepts it. Pass any option (or -y) and
+# it runs straight through without asking, so scripts stay predictable.
+#
+# A DNS server wants a fixed address: a static IP is strongly recommended, since
 # every client on the LAN will be pointed at this container's IP.
 #
 # ---------------------------------------------------------------------------
@@ -64,6 +69,9 @@ DEFAULT_HOSTNAME="adguardhome"
 DEFAULT_DISK_GB="4"
 DEFAULT_CORES="1"
 DEFAULT_MEMORY_MB="512"
+# Every client on the LAN ends up pointed at this container's address, so a
+# lease that can change is a footgun. The prompt defaults to yes accordingly.
+DEFAULT_PREFER_STATIC="y"
 
 CHANNEL="release"
 
@@ -91,6 +99,7 @@ Usage:
   ./adguard-home-lxc.sh status <ctid>
 
 create options:
+  -y, --defaults         Skip the questions and use the recommended values
   -i, --id <id>          Container ID (default: next free ID)
   -n, --hostname <name>  Container hostname (default: adguardhome)
   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
@@ -108,7 +117,11 @@ create options:
                           templates already cached on the host when the
                           appliance mirror is broken or unreachable)
 
-A DNS server wants a fixed address: --static is strongly recommended, since
+Run with no options on a terminal and it asks about each setting, showing the
+recommended value in brackets — Enter accepts it. Pass any option (or -y) and
+it runs straight through without asking, so scripts stay predictable.
+
+A DNS server wants a fixed address: a static IP is strongly recommended, since
 every client on the LAN will be pointed at this container's IP.
 EOF_PVS_USAGE
 }
@@ -466,6 +479,7 @@ run_step() {
 # only have to say *what* to show, never how to pad it. Buffers first so the
 # box widens to fit its longest line instead of ragged-edging on long URLs.
 print_summary_box() {
+  local colour="${1:-$C_OK}"
   local lines=() line width=63 rule
   while IFS= read -r line || [[ -n "$line" ]]; do
     lines+=("$line")
@@ -473,7 +487,7 @@ print_summary_box() {
   done
   rule="$(printf '%*s' "$width" '' | tr ' ' '-')"
 
-  printf "\n%b" "$C_OK"
+  printf "\n%b" "$colour"
   printf '+%s+\n' "$rule"
   for line in ${lines[@]+"${lines[@]}"}; do
     printf '|%-*s|\n' "$width" "$line"
@@ -597,6 +611,28 @@ ensure_template() {
   echo "${TEMPLATE_STORAGE}:vztmpl/${best}"
 }
 
+# What this host can actually offer, for the interactive picker. Offering a
+# free-text field for something with three valid answers is how typos become
+# support questions.
+#
+# Each ends in `|| true`: these run inside a bare $(...) substitution (an
+# argument to ask_choice, not an if/while condition), and with errtrace (-E)
+# the ERR trap fires *inside that subshell* for any failing command in it —
+# missing binary, empty grep match, whatever — printing a false "failed at
+# line N" and aborting the probe, even though the caller only wants a best
+# effort and already falls back to the current default on empty input.
+storage_options() {
+  pvesm status --content rootdir 2>/dev/null | awk 'NR>1 && $3=="active" {print $1}' || true
+}
+
+bridge_options() {
+  ip -br link show type bridge 2>/dev/null | awk '{print $1}' || true
+}
+
+host_gateway() {
+  ip route 2>/dev/null | awk '/^default/ {print $3; exit}' || true
+}
+
 build_net_arg() {
   if [[ -n "$STATIC_CIDR" ]]; then
     echo "name=eth0,bridge=${BRIDGE},ip=${STATIC_CIDR},gw=${GATEWAY}"
@@ -650,6 +686,122 @@ create_container() {
       --start 0
   run_step "starting container ${ctid}" pct start "$ctid"
 }
+# lib/prompt.sh — interactive configuration. Every prompt offers the
+# recommended value in brackets, so Enter is always a valid answer.
+
+# Prompts read from /dev/tty, never stdin. Under `bash <(curl ...)` stdin can be
+# the script itself; a `read` that swallowed it would corrupt the run in a way
+# that is very hard to diagnose.
+interactive() {
+  [[ -t 1 ]] || return 1
+  [[ -r /dev/tty ]] || return 1
+  return 0
+}
+
+ask() {
+  local prompt="$1" default="$2" validator="${3:-}" answer
+  while true; do
+    printf "  %b%s%b [%b%s%b]: " \
+      "$C_BOLD" "$prompt" "$C_RESET" "$C_INFO" "$default" "$C_RESET" >&2
+    IFS= read -r answer </dev/tty || { printf '\n' >&2; answer=""; }
+    [[ -z "$answer" ]] && answer="$default"
+    if [[ -z "$validator" ]] || "$validator" "$answer"; then
+      printf '%s' "$answer"
+      return 0
+    fi
+  done
+}
+
+ask_yesno() {
+  local prompt="$1" default="${2:-y}" answer hint
+  case "$default" in
+    y|Y) hint="Y/n" ;;
+    *)   hint="y/N" ;;
+  esac
+  while true; do
+    printf "  %b%s%b [%b%s%b]: " \
+      "$C_BOLD" "$prompt" "$C_RESET" "$C_INFO" "$hint" "$C_RESET" >&2
+    IFS= read -r answer </dev/tty || answer=""
+    [[ -z "$answer" ]] && answer="$default"
+    case "$answer" in
+      y|Y|yes|YES|Yes) return 0 ;;
+      n|N|no|NO|No)    return 1 ;;
+      *) warn "please answer y or n" ;;
+    esac
+  done
+}
+
+# Numbered pick from a newline-separated list. Accepts either the number or the
+# value typed out. With only one option there is nothing to choose, so it
+# returns silently rather than asking a question with one answer.
+ask_choice() {
+  local prompt="$1" default="$2" options="$3" count opt i answer pick
+  count="$(printf '%s\n' "$options" | grep -c . || true)"
+  if [[ -z "$count" || "$count" -le 1 ]]; then
+    printf '%s' "$default"
+    return 0
+  fi
+
+  printf '\n' >&2
+  i=1
+  while IFS= read -r opt; do
+    [[ -z "$opt" ]] && continue
+    if [[ "$opt" == "$default" ]]; then
+      printf "    %2d) %s%b  (recommended)%b\n" "$i" "$opt" "$C_DIM" "$C_RESET" >&2
+    else
+      printf "    %2d) %s\n" "$i" "$opt" >&2
+    fi
+    i=$(( i + 1 ))
+  done < <(printf '%s\n' "$options" | grep .)
+
+  while true; do
+    answer="$(ask "$prompt" "$default")"
+    if [[ "$answer" =~ ^[0-9]+$ ]] && [[ "$answer" -ge 1 && "$answer" -le "$count" ]]; then
+      pick="$(printf '%s\n' "$options" | grep . | sed -n "${answer}p")"
+      printf '%s' "$pick"
+      return 0
+    fi
+    if printf '%s\n' "$options" | grep -qx -- "$answer"; then
+      printf '%s' "$answer"
+      return 0
+    fi
+    warn "pick a number from the list, or type the name exactly"
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Validators. Each explains the problem itself, so ask() can just loop.
+# ---------------------------------------------------------------------------
+v_posint() {
+  if [[ "$1" =~ ^[0-9]+$ ]] && [[ "$1" -gt 0 ]]; then return 0; fi
+  warn "must be a positive whole number"
+  return 1
+}
+
+v_ctid() {
+  if ! [[ "$1" =~ ^[0-9]+$ ]]; then warn "container ID must be a number"; return 1; fi
+  if [[ "$1" -lt 100 ]]; then warn "container IDs start at 100"; return 1; fi
+  if pct status "$1" >/dev/null 2>&1; then warn "container $1 already exists"; return 1; fi
+  return 0
+}
+
+v_hostname() {
+  if [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$ ]]; then return 0; fi
+  warn "letters, digits and hyphens only, and it cannot start or end with a hyphen"
+  return 1
+}
+
+v_cidr() {
+  if [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; then return 0; fi
+  warn "needs an address *and* a prefix length, e.g. 192.168.1.53/24"
+  return 1
+}
+
+v_ip() {
+  if [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then return 0; fi
+  warn "expected an IPv4 address, e.g. 192.168.1.1"
+  return 1
+}
 # lib/main.sh — defaults, argument parsing and the create/update/uninstall/
 # status dispatcher shared by every script. Include this LAST: it reads the
 # DEFAULT_* values the service set above it, and the svc_* hooks it defines
@@ -678,6 +830,11 @@ TEMPLATE=""
 MANAGE_PATH="/usr/local/sbin/${SERVICE_ID}-manage.sh"
 SVC_OPT_SHIFT=0
 SVC_INSTALL_ARGS=()
+PREFER_STATIC="${DEFAULT_PREFER_STATIC:-n}"
+# Any create flag at all means "you are scripting me": no prompts, so a command
+# in a runbook behaves the same in six months as it does today.
+OPTS_GIVEN=0
+ASSUME_DEFAULTS=0
 
 # ---- Service hooks: defaults here, overridden below the include if needed --
 # svc_parse_option  — handle one service-specific flag; set SVC_OPT_SHIFT to
@@ -690,8 +847,13 @@ svc_install_args() { SVC_INSTALL_ARGS=(); }
 svc_summary_lines() { :; }
 # svc_post_create   — anything to do on the host after install ($1=ctid $2=ip).
 svc_post_create() { :; }
+# svc_prompt        — extra questions for the interactive configure step.
+svc_prompt() { :; }
+# svc_plan_lines    — extra " label : value" lines for the pre-create summary.
+svc_plan_lines() { :; }
 
 parse_create_args() {
+  [[ $# -gt 0 ]] && OPTS_GIVEN=1
   while (( "$#" )); do
     case "$1" in
       -i|--id) CTID="$2"; shift 2 ;;
@@ -705,6 +867,7 @@ parse_create_args() {
       --static) STATIC_CIDR="$2"; shift 2 ;;
       --gateway) GATEWAY="$2"; shift 2 ;;
       --template) TEMPLATE="$2"; shift 2 ;;
+      -y|--yes|--defaults) ASSUME_DEFAULTS=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *)
         SVC_OPT_SHIFT=0
@@ -759,30 +922,97 @@ summary() {
   fi
 }
 
+# Prompt only when there is a human to answer, nothing was passed on the
+# command line, and defaults were not explicitly requested.
+wizard_wanted() {
+  [[ "$ASSUME_DEFAULTS" -eq 1 ]] && return 1
+  [[ "$OPTS_GIVEN" -eq 1 ]] && return 1
+  interactive || return 1
+  return 0
+}
+
+plan_lines() {
+  echo " ${SERVICE_NAME} - about to create"
+  echo ""
+  echo " Container ID  : ${CTID}"
+  echo " Hostname      : ${CT_HOSTNAME}"
+  echo " Storage pool  : ${ROOTFS_STORAGE}"
+  echo " Disk size     : ${DISK_GB} GB"
+  echo " CPU cores     : ${CORES}"
+  echo " Memory        : ${MEMORY_MB} MB"
+  if [[ -n "$STATIC_CIDR" ]]; then
+    echo " Network       : ${STATIC_CIDR} via ${GATEWAY} on ${BRIDGE}"
+  else
+    echo " Network       : DHCP on ${BRIDGE}"
+  fi
+  svc_plan_lines
+}
+
+configure_interactive() {
+  printf '\n' >&2
+  info "Enter accepts the recommended value shown in brackets."
+  printf '\n' >&2
+
+  CTID="$(ask "Container ID" "$CTID" v_ctid)"
+  CT_HOSTNAME="$(ask "Hostname" "$CT_HOSTNAME" v_hostname)"
+  ROOTFS_STORAGE="$(ask_choice "Storage pool" "$ROOTFS_STORAGE" "$(storage_options)")"
+  DISK_GB="$(ask "Disk size (GB)" "$DISK_GB" v_posint)"
+  CORES="$(ask "CPU cores" "$CORES" v_posint)"
+  MEMORY_MB="$(ask "Memory (MB)" "$MEMORY_MB" v_posint)"
+  BRIDGE="$(ask_choice "Network bridge" "$BRIDGE" "$(bridge_options)")"
+
+  if ask_yesno "Assign a static IP?" "$PREFER_STATIC"; then
+    STATIC_CIDR="$(ask "Static address (CIDR)" "$STATIC_CIDR" v_cidr)"
+    GATEWAY="$(ask "Gateway" "${GATEWAY:-$(host_gateway)}" v_ip)"
+  else
+    STATIC_CIDR=""
+    GATEWAY=""
+  fi
+
+  svc_prompt
+}
+
+confirm_plan() {
+  if ! wizard_wanted; then
+    plan_lines | print_summary_box "$C_INFO"
+    return 0
+  fi
+  while true; do
+    plan_lines | print_summary_box "$C_INFO"
+    if ask_yesno "Create with these settings?" "y"; then
+      return 0
+    fi
+    configure_interactive
+  done
+}
+
 do_create() {
   require_pve_host
-  local arch ctid template net_arg ip
+  local arch template net_arg ip
 
   arch="$(resolve_arch)"
-  ctid="$(resolve_ctid)"
   ROOTFS_STORAGE="$(resolve_storage rootdir "$ROOTFS_STORAGE" "local-lvm local-zfs local")"
   TEMPLATE_STORAGE="$(resolve_storage vztmpl "$TEMPLATE_STORAGE" "local")"
+  CTID="$(resolve_ctid)"
+
+  confirm_plan
+
   template="$(ensure_template "$arch")"
   net_arg="$(build_net_arg)"
 
-  info "target: CT ${ctid} (${CT_HOSTNAME}) on ${arch}, rootfs ${ROOTFS_STORAGE}, template ${template}"
+  info "target: CT ${CTID} (${CT_HOSTNAME}) on ${arch}, rootfs ${ROOTFS_STORAGE}"
 
-  create_container "$ctid" "$template" "$net_arg"
-  wait_for_network "$ctid"
-  run_step "pushing management script" push_manage_script "$ctid"
+  create_container "$CTID" "$template" "$net_arg"
+  wait_for_network "$CTID"
+  run_step "pushing management script" push_manage_script "$CTID"
 
   info "installing ${SERVICE_NAME}"
   svc_install_args
-  pct_exec_manage "$ctid" install ${SVC_INSTALL_ARGS[@]+"${SVC_INSTALL_ARGS[@]}"}
+  pct_exec_manage "$CTID" install ${SVC_INSTALL_ARGS[@]+"${SVC_INSTALL_ARGS[@]}"}
 
-  ip="$(container_ip "$ctid")"
-  svc_post_create "$ctid" "${ip:-}"
-  summary "$ctid" "${ip:-<CT-ip>}"
+  ip="$(container_ip "$CTID")"
+  svc_post_create "$CTID" "${ip:-}"
+  summary "$CTID" "${ip:-<CT-ip>}"
 }
 
 # The agent inside the container has already printed a precise explanation by
@@ -853,6 +1083,14 @@ svc_parse_option() {
 }
 
 svc_install_args() { SVC_INSTALL_ARGS=(--channel "$CHANNEL"); }
+
+svc_prompt() {
+  CHANNEL="$(ask_choice "AdGuard Home channel" "$CHANNEL" "$(printf 'release\nbeta\nedge')")"
+}
+
+svc_plan_lines() {
+  echo " Channel       : ${CHANNEL}"
+}
 
 svc_summary_lines() {
   echo " Setup wizard : http://${2}:3000"

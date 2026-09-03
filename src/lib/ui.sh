@@ -107,6 +107,7 @@ run_step() {
 # only have to say *what* to show, never how to pad it. Buffers first so the
 # box widens to fit its longest line instead of ragged-edging on long URLs.
 print_summary_box() {
+  local colour="${1:-$C_OK}"
   local lines=() line width=63 rule
   while IFS= read -r line || [[ -n "$line" ]]; do
     lines+=("$line")
@@ -114,7 +115,7 @@ print_summary_box() {
   done
   rule="$(printf '%*s' "$width" '' | tr ' ' '-')"
 
-  printf "\n%b" "$C_OK"
+  printf "\n%b" "$colour"
   printf '+%s+\n' "$rule"
   for line in ${lines[@]+"${lines[@]}"}; do
     printf '|%-*s|\n' "$width" "$line"

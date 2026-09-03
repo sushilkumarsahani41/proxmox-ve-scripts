@@ -21,6 +21,7 @@
 #   ./adguard-home-lxc.sh status <ctid>
 #
 # create options:
+#   -y, --defaults         Skip the questions and use the recommended values
 #   -i, --id <id>          Container ID (default: next free ID)
 #   -n, --hostname <name>  Container hostname (default: adguardhome)
 #   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
@@ -38,7 +39,11 @@
 #                           templates already cached on the host when the
 #                           appliance mirror is broken or unreachable)
 #
-# A DNS server wants a fixed address: --static is strongly recommended, since
+# Run with no options on a terminal and it asks about each setting, showing the
+# recommended value in brackets — Enter accepts it. Pass any option (or -y) and
+# it runs straight through without asking, so scripts stay predictable.
+#
+# A DNS server wants a fixed address: a static IP is strongly recommended, since
 # every client on the LAN will be pointed at this container's IP.
 
 set -Eeuo pipefail
@@ -55,6 +60,9 @@ DEFAULT_HOSTNAME="adguardhome"
 DEFAULT_DISK_GB="4"
 DEFAULT_CORES="1"
 DEFAULT_MEMORY_MB="512"
+# Every client on the LAN ends up pointed at this container's address, so a
+# lease that can change is a footgun. The prompt defaults to yes accordingly.
+DEFAULT_PREFER_STATIC="y"
 
 CHANNEL="release"
 
@@ -62,6 +70,7 @@ CHANNEL="release"
 # @embed ct-lxc/adguard-home/manage.sh AS manage_script
 # @include lib/ui.sh
 # @include lib/pve.sh
+# @include lib/prompt.sh
 # @include lib/main.sh
 
 # ---------------------------------------------------------------------------
@@ -81,6 +90,14 @@ svc_parse_option() {
 }
 
 svc_install_args() { SVC_INSTALL_ARGS=(--channel "$CHANNEL"); }
+
+svc_prompt() {
+  CHANNEL="$(ask_choice "AdGuard Home channel" "$CHANNEL" "$(printf 'release\nbeta\nedge')")"
+}
+
+svc_plan_lines() {
+  echo " Channel       : ${CHANNEL}"
+}
 
 svc_summary_lines() {
   echo " Setup wizard : http://${2}:3000"

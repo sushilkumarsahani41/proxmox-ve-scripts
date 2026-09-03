@@ -69,8 +69,35 @@ All optional; the defaults do nothing.
 |---|---|
 | `svc_parse_option` | A service-specific flag. Set `SVC_OPT_SHIFT` to the number of argv entries consumed, return 0; return 1 to reject it as unknown. |
 | `svc_install_args` | Fill `SVC_INSTALL_ARGS` with extra args for `manage.sh install`. |
+| `svc_prompt` | Extra questions during the interactive configure step (`ask`/`ask_choice`/`ask_yesno`). |
+| `svc_plan_lines` | Extra `" label : value"` lines in the pre-create plan box. |
 | `svc_summary_lines` | Extra `" label : value"` lines in the closing box. `$1`=ctid `$2`=ip. |
 | `svc_post_create` | Anything on the host after install. `$1`=ctid `$2`=ip. |
+
+## The configure wizard
+
+`create` prompts on a real terminal only when the caller passed *no* options at
+all — pass anything (or `-y`/`--defaults`) and it goes straight through. That
+check (`wizard_wanted` in `lib/main.sh`) is the whole safety net against a
+scripted or piped invocation hanging forever on a `read`, so do not bypass it:
+any new prompt belongs in `svc_prompt`, called from the same guarded path
+everything else uses.
+
+`lib/prompt.sh` provides `ask` (free text with a default), `ask_choice`
+(numbered pick from a host-derived list, skipped automatically when there is
+only one option), and `ask_yesno`. Every one always reads from `/dev/tty`
+explicitly, never stdin — under `bash <(curl ...)`, stdin is the script's own
+source, and a `read` without `</dev/tty` would consume it.
+
+A function that probes the host for a picker's option list (see
+`storage_options`, `bridge_options`, `host_gateway` in `lib/pve.sh`) must end
+its pipeline with `|| true`. These run inside a bare `$(...)` substitution —
+an argument, not an `if`/`while` condition — and with `errtrace` (`set -E`,
+which every script sets) the ERR trap fires *inside that subshell* for any
+failing command in it: a missing binary, an empty grep match, anything. Without
+the guard, a host missing one optional tool prints a confusing "failed at line
+N" during what is only ever meant to be a best-effort probe with a graceful
+fallback.
 
 ## House rules
 
