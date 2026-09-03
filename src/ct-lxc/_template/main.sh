@@ -28,6 +28,9 @@
 #   -m, --memory <MB>      RAM in MB (default: 512)
 #   --static <cidr>        Static IP, e.g. 192.168.1.50/24 (default: dhcp)
 #   --gateway <ip>         Gateway, required with --static
+#   --password <pass>      Root password (default: random, shown once after
+#                           creation). pct enter <ctid> from the host always
+#                           works without one, if you'd rather skip this.
 #   --template <spec>      Skip template auto-detection, e.g.
 #                           local:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst
 #

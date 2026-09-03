@@ -186,6 +186,7 @@ create_container() {
       --net0 "$net_arg" \
       --unprivileged "$UNPRIVILEGED" \
       --features "nesting=${NESTING}" \
+      --password "$ROOT_PASSWORD" \
       --onboot 1 \
       --start 0
   run_step "starting container ${ctid}" pct start "$ctid"

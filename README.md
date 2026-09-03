@@ -74,6 +74,11 @@ touched:
 | Create with these settings? [Y/n]:
 ```
 
+A root password is always set — auto-generated and shown once in the closing
+box if you don't provide `--password`, since it's otherwise unset entirely and
+console/SSH password login won't work. `pct enter <ctid>` from the Proxmox host
+always works with no password needed, if you'd rather skip this altogether.
+
 Pass any option at all — or `-y`/`--defaults` — and it skips every question and
 runs straight through, so a scripted or piped invocation never blocks waiting
 on a terminal that isn't there:
@@ -142,7 +147,9 @@ Every `create` accepts these:
 | `-m, --memory <MB>` | per service | RAM |
 | `--static <cidr>` | dhcp | Static IP, e.g. `192.168.1.53/24` |
 | `--gateway <ip>` | — | Required with `--static` |
+| `--password <pass>` | random | Root password (min 8 chars). Shown once after creation if not set. |
 | `--template <spec>` | auto | Bypass template detection entirely |
+| `-y, --defaults` | — | Skip the wizard, use recommended values |
 
 `--template` is the escape hatch if detection still picks wrong. Pass a
 template you already have:

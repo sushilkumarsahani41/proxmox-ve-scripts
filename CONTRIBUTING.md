@@ -85,9 +85,20 @@ everything else uses.
 
 `lib/prompt.sh` provides `ask` (free text with a default), `ask_choice`
 (numbered pick from a host-derived list, skipped automatically when there is
-only one option), and `ask_yesno`. Every one always reads from `/dev/tty`
+only one option), `ask_yesno`, and `ask_secret` (hidden input, confirmed
+twice — used for the root password). Every one always reads from `/dev/tty`
 explicitly, never stdin — under `bash <(curl ...)`, stdin is the script's own
 source, and a `read` without `</dev/tty` would consume it.
+
+`generate_password` (also in `lib/prompt.sh`) is `tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20`.
+The `|| true` on it is load-bearing: `head` closes its end of the pipe the
+instant it has 20 bytes, `tr` is still writing to `/dev/urandom` when that
+happens, and writing to a reader that hung up is `SIGPIPE` — exit 141, on
+*every* call, by design, since head finishing first is the whole point. Under
+`pipefail` that becomes the pipeline's exit status, and since this runs in a
+bare `$(...)` substitution the ERR trap kills the entire script on it. Do not
+remove that guard, and use the same pattern (`... | head -N ... || true`) for
+any future pipeline that intentionally truncates a longer or unbounded stream.
 
 A function that probes the host for a picker's option list (see
 `storage_options`, `bridge_options`, `host_gateway` in `lib/pve.sh`) must end

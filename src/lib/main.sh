@@ -24,6 +24,11 @@ NESTING="${DEFAULT_NESTING:-0}"
 STATIC_CIDR=""
 GATEWAY=""
 TEMPLATE=""
+# Empty here means "generate a random one right before create_container runs"
+# — see do_create. Kept empty rather than generated up front so a wizard user
+# who picks "set my own" overwrites it, and re-running the wizard after "n" at
+# the plan prompt clears back to auto rather than keeping a stale generated one.
+ROOT_PASSWORD=""
 MANAGE_PATH="/usr/local/sbin/${SERVICE_ID}-manage.sh"
 SVC_OPT_SHIFT=0
 SVC_INSTALL_ARGS=()
@@ -64,6 +69,7 @@ parse_create_args() {
       --static) STATIC_CIDR="$2"; shift 2 ;;
       --gateway) GATEWAY="$2"; shift 2 ;;
       --template) TEMPLATE="$2"; shift 2 ;;
+      --password) ROOT_PASSWORD="$2"; shift 2 ;;
       -y|--yes|--defaults) ASSUME_DEFAULTS=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *)
@@ -78,6 +84,9 @@ parse_create_args() {
   done
   if [[ -n "$STATIC_CIDR" && -z "$GATEWAY" ]]; then
     die "--static requires --gateway"
+  fi
+  if [[ -n "$ROOT_PASSWORD" ]]; then
+    v_password "$ROOT_PASSWORD" || die "--password must be at least 8 characters"
   fi
   return 0
 }
@@ -106,10 +115,15 @@ summary() {
     echo ""
     svc_summary_lines "$ctid" "$ip"
     echo ""
+    echo " Root login    : pct enter ${ctid}   (from the PVE host, no password needed)"
+    echo " Root password : ${ROOT_PASSWORD}"
+    echo ""
     echo " Update       : ${self} update ${ctid}"
     echo " Status       : ${self} status ${ctid}"
     echo " Uninstall    : ${self} uninstall ${ctid}"
   } | print_summary_box
+
+  warn "the root password above is shown once and is not stored anywhere — save it now."
 
   if ! ran_from_file; then
     printf "%b[*]%b You ran this from a pipe, so there is no local copy yet. To manage CT %s later:\n" \
@@ -142,6 +156,11 @@ plan_lines() {
   else
     echo " Network       : DHCP on ${BRIDGE}"
   fi
+  if [[ -n "$ROOT_PASSWORD" ]]; then
+    echo " Root password : (as entered, hidden)"
+  else
+    echo " Root password : (auto-generated, shown once after creation)"
+  fi
   svc_plan_lines
 }
 
@@ -164,6 +183,12 @@ configure_interactive() {
   else
     STATIC_CIDR=""
     GATEWAY=""
+  fi
+
+  if ask_yesno "Auto-generate a secure root password?" "y"; then
+    ROOT_PASSWORD=""
+  else
+    ROOT_PASSWORD="$(ask_secret "Root password (min 8 characters)" v_password)"
   fi
 
   svc_prompt
@@ -193,6 +218,7 @@ do_create() {
   CTID="$(resolve_ctid)"
 
   confirm_plan
+  [[ -n "$ROOT_PASSWORD" ]] || ROOT_PASSWORD="$(generate_password)"
 
   template="$(ensure_template "$arch")"
   net_arg="$(build_net_arg)"

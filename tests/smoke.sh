@@ -246,7 +246,10 @@ for script_path in ${scripts[@]+"${scripts[@]}"}; do
   # error into the transcript.
   if command -v python3 >/dev/null 2>&1; then
     wiz_cmd="set +u; source '$lib' >/dev/null 2>&1; CTID=105; CT_HOSTNAME=adguardhome; ROOTFS_STORAGE=local; DISK_GB=4; CORES=1; MEMORY_MB=512; BRIDGE=vmbr0; CHANNEL=release; configure_interactive; echo WIZ-HOST=\$CT_HOSTNAME; echo WIZ-MEM=\$MEMORY_MB; echo WIZ-STATIC=\$STATIC_CIDR; echo WIZ-DONE"
-    wiz_steps=$'\nmydns\n\n\n1024\n\nnotanip\n192.168.9.53/24\n192.168.9.1\nbeta'
+    # ...static?[default y]->accept, CIDR(bad,rejected), CIDR(good), gateway,
+    # auto-generate password?[default y]->accept, then the service's own
+    # svc_prompt question (channel).
+    wiz_steps=$'\nmydns\n\n\n1024\n\nnotanip\n192.168.9.53/24\n192.168.9.1\n\nbeta'
     out="$(run_in_pty_scripted "$wiz_cmd" "WIZ-DONE" "$wiz_steps" 2>&1 || true)"
     if printf '%s' "$out" | grep -q '\[x\]'; then
       fail "$name wizard prints no spurious errors on a full pass ($(printf '%s' "$out" | grep '\[x\]' | head -1))"
@@ -265,7 +268,41 @@ for script_path in ${scripts[@]+"${scripts[@]}"}; do
     else
       fail "$name wizard re-asks on an invalid CIDR"
     fi
+
+    # The custom-password branch (ask_secret): decline auto-generate, mistype
+    # the confirmation once, then get it right. Exercises hidden input and the
+    # length validator in the same pass.
+    pw_cmd="set +u; source '$lib' >/dev/null 2>&1; CTID=105; CT_HOSTNAME=adguardhome; ROOTFS_STORAGE=local; DISK_GB=4; CORES=1; MEMORY_MB=512; BRIDGE=vmbr0; CHANNEL=release; configure_interactive >/dev/null; echo PW-RESULT=\$ROOT_PASSWORD; echo PW-DONE"
+    # CTID/hostname/disk/cores/memory accept defaults, decline static IP (this
+    # service defaults that question to yes, so it must be answered explicitly
+    # or the next two steps get consumed as a CIDR/gateway instead), decline
+    # auto-generate, then the short/mismatch/good password sequence.
+    pw_steps=$'\n\n\n\n\nn\nn\nshortpw\nCorrectHorse1\nWrongConfirm\nCorrectHorse1\nCorrectHorse1\nrelease'
+    pw_out="$(run_in_pty_scripted "$pw_cmd" "PW-DONE" "$pw_steps" 2>&1 || true)"
+    if printf '%s' "$pw_out" | grep -q 'PW-RESULT=CorrectHorse1'; then
+      pass "$name wizard: custom password accepted after a short one and a mismatched confirmation"
+    else
+      fail "$name wizard: custom password accepted after a short one and a mismatched confirmation"
+    fi
+    if printf '%s' "$pw_out" | grep -qi 'shortpw'; then
+      fail "$name wizard: a rejected password should never appear in output"
+    else
+      pass "$name wizard: a rejected password never appears in output"
+    fi
   fi
+
+  # generate_password pipes /dev/urandom through `tr | head -c 20`; head exits
+  # the instant it has enough bytes while tr is still writing, which is SIGPIPE
+  # (exit 141) on every single call by design, not an occasional fluke. Run it
+  # enough times that a missing `|| true` guard would reliably show up as a
+  # short/empty result or a "failed at line N" from the ERR trap.
+  pwfail=0
+  for _ in $(seq 1 15); do
+    pw="$( ( set +u; source "$lib" >/dev/null 2>&1; generate_password ) 2>&1 )"
+    [[ "${#pw}" -eq 20 && "$pw" != *'[x]'* ]] || { pwfail=1; break; }
+  done
+  if [[ "$pwfail" -eq 0 ]]; then pass "$name generate_password survives SIGPIPE from head across 15 runs"
+  else fail "$name generate_password survives SIGPIPE from head across 15 runs (got: len=${#pw} '$pw')"; fi
 
   # Validators are the whole reason a typo does not become a broken container.
   bad=0

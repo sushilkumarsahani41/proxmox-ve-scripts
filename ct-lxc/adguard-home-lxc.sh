@@ -32,6 +32,9 @@
 #   -m, --memory <MB>      RAM in MB (default: 512)
 #   --static <cidr>        Static IP, e.g. 192.168.1.53/24 (default: dhcp)
 #   --gateway <ip>         Gateway, required with --static
+#   --password <pass>      Root password (default: random, shown once after
+#                           creation). pct enter <ctid> from the host always
+#                           works without one, if you'd rather skip this.
 #   --channel <name>       AdGuard Home channel: release, beta, edge
 #   --template <spec>      Skip template auto-detection entirely, e.g.
 #                           local:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst
@@ -110,6 +113,9 @@ create options:
   -m, --memory <MB>      RAM in MB (default: 512)
   --static <cidr>        Static IP, e.g. 192.168.1.53/24 (default: dhcp)
   --gateway <ip>         Gateway, required with --static
+  --password <pass>      Root password (default: random, shown once after
+                          creation). pct enter <ctid> from the host always
+                          works without one, if you'd rather skip this.
   --channel <name>       AdGuard Home channel: release, beta, edge
   --template <spec>      Skip template auto-detection entirely, e.g.
                           local:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst
@@ -682,6 +688,7 @@ create_container() {
       --net0 "$net_arg" \
       --unprivileged "$UNPRIVILEGED" \
       --features "nesting=${NESTING}" \
+      --password "$ROOT_PASSWORD" \
       --onboot 1 \
       --start 0
   run_step "starting container ${ctid}" pct start "$ctid"
@@ -769,6 +776,55 @@ ask_choice() {
   done
 }
 
+# 20 alphanumeric characters from /dev/urandom — plenty of entropy (~119 bits)
+# without needing openssl, and free of shell/quoting metacharacters since it
+# only ever travels as a single argv element, never through eval.
+#
+# `|| true` is load-bearing, not decorative: `head -c 20` closes its end of the
+# pipe the instant it has 20 bytes, tr is still writing when that happens, and
+# writing to a reader that has hung up is SIGPIPE — exit 141. Under pipefail
+# that is the pipeline's exit status, and since this runs in a bare $(...)
+# substitution the ERR trap fires on it and kills the whole script. Not a rare
+# edge case: it is what happens on *every* call, deterministically, because
+# head always finishes first by design.
+generate_password() {
+  LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 20 || true
+}
+
+# Hidden input, confirmed twice. Loops on mismatch or on failing $2 (a
+# validator), same contract as ask().
+ask_secret() {
+  local prompt="$1" validator="${2:-}" pass1 pass2
+  while true; do
+    printf "  %b%s%b: " "$C_BOLD" "$prompt" "$C_RESET" >&2
+    stty -echo </dev/tty 2>/dev/null
+    IFS= read -r pass1 </dev/tty || pass1=""
+    stty echo </dev/tty 2>/dev/null
+    printf '\n' >&2
+
+    if [[ -z "$pass1" ]]; then
+      warn "cannot be empty"
+      continue
+    fi
+    if [[ -n "$validator" ]] && ! "$validator" "$pass1"; then
+      continue
+    fi
+
+    printf "  %bConfirm%b: " "$C_BOLD" "$C_RESET" >&2
+    stty -echo </dev/tty 2>/dev/null
+    IFS= read -r pass2 </dev/tty || pass2=""
+    stty echo </dev/tty 2>/dev/null
+    printf '\n' >&2
+
+    if [[ "$pass1" != "$pass2" ]]; then
+      warn "passwords did not match"
+      continue
+    fi
+    printf '%s' "$pass1"
+    return 0
+  done
+}
+
 # ---------------------------------------------------------------------------
 # Validators. Each explains the problem itself, so ask() can just loop.
 # ---------------------------------------------------------------------------
@@ -794,6 +850,12 @@ v_hostname() {
 v_cidr() {
   if [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; then return 0; fi
   warn "needs an address *and* a prefix length, e.g. 192.168.1.53/24"
+  return 1
+}
+
+v_password() {
+  if [[ ${#1} -ge 8 ]]; then return 0; fi
+  warn "must be at least 8 characters"
   return 1
 }
 
@@ -827,6 +889,11 @@ NESTING="${DEFAULT_NESTING:-0}"
 STATIC_CIDR=""
 GATEWAY=""
 TEMPLATE=""
+# Empty here means "generate a random one right before create_container runs"
+# — see do_create. Kept empty rather than generated up front so a wizard user
+# who picks "set my own" overwrites it, and re-running the wizard after "n" at
+# the plan prompt clears back to auto rather than keeping a stale generated one.
+ROOT_PASSWORD=""
 MANAGE_PATH="/usr/local/sbin/${SERVICE_ID}-manage.sh"
 SVC_OPT_SHIFT=0
 SVC_INSTALL_ARGS=()
@@ -867,6 +934,7 @@ parse_create_args() {
       --static) STATIC_CIDR="$2"; shift 2 ;;
       --gateway) GATEWAY="$2"; shift 2 ;;
       --template) TEMPLATE="$2"; shift 2 ;;
+      --password) ROOT_PASSWORD="$2"; shift 2 ;;
       -y|--yes|--defaults) ASSUME_DEFAULTS=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *)
@@ -881,6 +949,9 @@ parse_create_args() {
   done
   if [[ -n "$STATIC_CIDR" && -z "$GATEWAY" ]]; then
     die "--static requires --gateway"
+  fi
+  if [[ -n "$ROOT_PASSWORD" ]]; then
+    v_password "$ROOT_PASSWORD" || die "--password must be at least 8 characters"
   fi
   return 0
 }
@@ -909,10 +980,15 @@ summary() {
     echo ""
     svc_summary_lines "$ctid" "$ip"
     echo ""
+    echo " Root login    : pct enter ${ctid}   (from the PVE host, no password needed)"
+    echo " Root password : ${ROOT_PASSWORD}"
+    echo ""
     echo " Update       : ${self} update ${ctid}"
     echo " Status       : ${self} status ${ctid}"
     echo " Uninstall    : ${self} uninstall ${ctid}"
   } | print_summary_box
+
+  warn "the root password above is shown once and is not stored anywhere — save it now."
 
   if ! ran_from_file; then
     printf "%b[*]%b You ran this from a pipe, so there is no local copy yet. To manage CT %s later:\n" \
@@ -945,6 +1021,11 @@ plan_lines() {
   else
     echo " Network       : DHCP on ${BRIDGE}"
   fi
+  if [[ -n "$ROOT_PASSWORD" ]]; then
+    echo " Root password : (as entered, hidden)"
+  else
+    echo " Root password : (auto-generated, shown once after creation)"
+  fi
   svc_plan_lines
 }
 
@@ -967,6 +1048,12 @@ configure_interactive() {
   else
     STATIC_CIDR=""
     GATEWAY=""
+  fi
+
+  if ask_yesno "Auto-generate a secure root password?" "y"; then
+    ROOT_PASSWORD=""
+  else
+    ROOT_PASSWORD="$(ask_secret "Root password (min 8 characters)" v_password)"
   fi
 
   svc_prompt
@@ -996,6 +1083,7 @@ do_create() {
   CTID="$(resolve_ctid)"
 
   confirm_plan
+  [[ -n "$ROOT_PASSWORD" ]] || ROOT_PASSWORD="$(generate_password)"
 
   template="$(ensure_template "$arch")"
   net_arg="$(build_net_arg)"

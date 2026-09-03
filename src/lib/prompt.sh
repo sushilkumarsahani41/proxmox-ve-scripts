@@ -82,6 +82,55 @@ ask_choice() {
   done
 }
 
+# 20 alphanumeric characters from /dev/urandom — plenty of entropy (~119 bits)
+# without needing openssl, and free of shell/quoting metacharacters since it
+# only ever travels as a single argv element, never through eval.
+#
+# `|| true` is load-bearing, not decorative: `head -c 20` closes its end of the
+# pipe the instant it has 20 bytes, tr is still writing when that happens, and
+# writing to a reader that has hung up is SIGPIPE — exit 141. Under pipefail
+# that is the pipeline's exit status, and since this runs in a bare $(...)
+# substitution the ERR trap fires on it and kills the whole script. Not a rare
+# edge case: it is what happens on *every* call, deterministically, because
+# head always finishes first by design.
+generate_password() {
+  LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 20 || true
+}
+
+# Hidden input, confirmed twice. Loops on mismatch or on failing $2 (a
+# validator), same contract as ask().
+ask_secret() {
+  local prompt="$1" validator="${2:-}" pass1 pass2
+  while true; do
+    printf "  %b%s%b: " "$C_BOLD" "$prompt" "$C_RESET" >&2
+    stty -echo </dev/tty 2>/dev/null
+    IFS= read -r pass1 </dev/tty || pass1=""
+    stty echo </dev/tty 2>/dev/null
+    printf '\n' >&2
+
+    if [[ -z "$pass1" ]]; then
+      warn "cannot be empty"
+      continue
+    fi
+    if [[ -n "$validator" ]] && ! "$validator" "$pass1"; then
+      continue
+    fi
+
+    printf "  %bConfirm%b: " "$C_BOLD" "$C_RESET" >&2
+    stty -echo </dev/tty 2>/dev/null
+    IFS= read -r pass2 </dev/tty || pass2=""
+    stty echo </dev/tty 2>/dev/null
+    printf '\n' >&2
+
+    if [[ "$pass1" != "$pass2" ]]; then
+      warn "passwords did not match"
+      continue
+    fi
+    printf '%s' "$pass1"
+    return 0
+  done
+}
+
 # ---------------------------------------------------------------------------
 # Validators. Each explains the problem itself, so ask() can just loop.
 # ---------------------------------------------------------------------------
@@ -107,6 +156,12 @@ v_hostname() {
 v_cidr() {
   if [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; then return 0; fi
   warn "needs an address *and* a prefix length, e.g. 192.168.1.53/24"
+  return 1
+}
+
+v_password() {
+  if [[ ${#1} -ge 8 ]]; then return 0; fi
+  warn "must be at least 8 characters"
   return 1
 }
 
