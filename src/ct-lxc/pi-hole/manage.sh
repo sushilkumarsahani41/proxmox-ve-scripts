@@ -130,6 +130,19 @@ cmd_install() {
   run_vendor_installer --unattended || die "Pi-hole installer failed — see /etc/pihole/install.log"
 
   is_installed || die "installer reported success but ${PIHOLE_BIN} is missing"
+
+  # The vendor installer starts pihole-FTL *before* it finishes building and
+  # atomically swapping in the real gravity database (its own log literally
+  # says "Restarting pihole-FTL service" first, then "Creating new gravity
+  # database" / "Swapping databases" afterward). FTL keeps its database
+  # connection open across that swap, which leaves it holding a stale
+  # reference to the pre-swap file — confirmed on a real container, where
+  # every domainlist/adlist write failed with "attempt to write a readonly
+  # database" until FTL was restarted. `pihole reloaddns`/`reloadlists`
+  # explicitly do not restart the process, so only a real restart clears it.
+  restart_service pihole-FTL
+  wait_for_service || die "pihole-FTL did not come back up after the post-install restart"
+
   "$PIHOLE_BIN" setpassword "$WEBPASSWORD" >/dev/null 2>&1 \
     || warn "Pi-hole installed, but setting the admin password failed — set one with: pihole setpassword"
 
@@ -162,6 +175,15 @@ cmd_update() {
     restore_state "$backup_dir"
     die "update failed, config restored from ${backup_dir} — packages may still be partially updated; consider 'pihole -r' (repair) or checking /etc/pihole/install.log"
   fi
+
+  # Same reasoning as cmd_install's restart: an actual version bump runs
+  # through gravity-touching steps again internally, and FTL keeping a
+  # database connection open across that is what causes the stale-reference
+  # bug documented there — `service_is_running` below only checks that FTL
+  # is listening for DNS, which stays true even when writes are broken, so a
+  # restart here is what actually closes the gap rather than the check that
+  # follows it.
+  restart_service pihole-FTL
 
   if ! wait_for_service; then
     warn "FTL did not come back up after update — restoring config from backup"

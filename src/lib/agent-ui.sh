@@ -47,3 +47,21 @@ ensure_pkg() {
 # support it. `ip addr show` is implemented identically by busybox and
 # iproute2, so parse that instead of branching per OS.
 container_ip() { ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | cut -d' ' -f2; }
+
+# Restarts a service under whichever init system this container has —
+# systemd on Debian, OpenRC on Alpine. This is the one place a service is
+# expected to reach past its own vendor CLI into the init system directly:
+# neither AdGuard Home's `-s` flag nor Pi-hole's `pihole` exposes a portable
+# "restart my daemon" (Pi-hole's `reloaddns`/`reloadlists` explicitly do NOT
+# restart the process — see cmd_install in pi-hole/manage.sh for why a real
+# restart, not a reload, is what a fresh install actually needs).
+restart_service() {
+  local name="$1"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl restart "$name"
+  elif command -v rc-service >/dev/null 2>&1; then
+    rc-service "$name" restart
+  else
+    die "no systemctl or rc-service available to restart ${name}"
+  fi
+}

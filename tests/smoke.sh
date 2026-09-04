@@ -211,6 +211,23 @@ else
   done
 fi
 
+printf '\nKnown-bug regressions\n'
+# Pi-hole's vendor installer restarts pihole-FTL *before* it finishes
+# building and swapping in the real gravity database, leaving FTL holding a
+# stale connection — every domainlist/adlist write then fails with "attempt
+# to write a readonly database" until the service is restarted. Confirmed on
+# a real container, fixed by an explicit restart_service call after both
+# install and update. This can't be exercised behaviorally without a real
+# gravity build, so guard it structurally: the built script must still
+# contain the fix, so a refactor that drops the call fails loudly here
+# instead of silently reintroducing a bug that only shows up hours later on
+# someone else'"'"'s box.
+if [[ -f "$ROOT/ct-lxc/pi-hole-lxc.sh" ]]; then
+  n="$(grep -c 'restart_service pihole-FTL' "$ROOT/ct-lxc/pi-hole-lxc.sh")"
+  if [[ "$n" -ge 2 ]]; then pass "pi-hole-lxc.sh restarts FTL after both install and update (gravity.db race fix)"
+  else fail "pi-hole-lxc.sh restarts FTL after both install and update (gravity.db race fix) — found ${n}, need 2"; fi
+fi
+
 printf '\nInteractive guard rails\n'
 for script_path in ${scripts[@]+"${scripts[@]}"}; do
   is_shim "$script_path" && continue

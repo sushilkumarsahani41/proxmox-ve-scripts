@@ -178,6 +178,33 @@ keys required, and whether they're even honored the way the (possibly
 outdated) documentation says, are exactly the kind of thing that changes
 between major versions without warning.
 
+## A vendor installer can restart its own daemon too early
+
+Found on Pi-hole, from a real bug report after a live deploy: its installer
+restarts the daemon (`pihole-FTL`) *before* it finishes building and
+atomically swapping in the real database, not after. The daemon keeps a
+database connection open across that swap and ends up holding a stale
+reference to the pre-swap file — every write against it then fails (in
+Pi-hole's case: "attempt to write a readonly database" on every domainlist/
+adlist insert), and the fresh install *looks* like it worked, because the
+install script itself exits 0 and the daemon is technically running.
+
+If a service you're wiring up does its own multi-step data build as part of
+install (gravity databases, search indexes, anything assembled after the
+daemon is already started), don't assume the daemon picked up the finished
+result just because the installer exited cleanly. Restart it explicitly
+afterward and verify it's actually healthy — `restart_service <name>` in
+`lib/agent-ui.sh` does this portably across systemd and OpenRC. Don't trust a
+"reload" command if the service offers one instead of a real restart: Pi-hole
+has `pihole reloaddns`/`reloadlists`, and neither actually restarts the
+process, which is exactly what a stale connection needs to clear.
+
+The failure mode here is a real trap: it can look like a permissions bug
+(file ownership was in fact completely correct when this was diagnosed) or a
+disk-space bug (disk was 50% free) before the actual cause — a stale
+open connection surviving a file swap — becomes obvious from the daemon's
+own log.
+
 ## House rules
 
 These are the things that make the difference between a script that works on
