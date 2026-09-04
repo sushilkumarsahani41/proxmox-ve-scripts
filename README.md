@@ -127,6 +127,7 @@ Every script takes `--help`.
 |---|---|---|
 | AdGuard Home | [`adguard-home-lxc.sh`](ct-lxc/adguard-home-lxc.sh) | Network-wide DNS ad blocking. `--channel release\|beta\|edge`. `--os debian\|alpine`. Use `--static` — every client will point at this IP. |
 | Pi-hole | [`pi-hole-lxc.sh`](ct-lxc/pi-hole-lxc.sh) | Network-wide DNS ad blocking. `--upstream cloudflare\|google\|quad9\|opendns`. `--os debian\|alpine`. Sets its own admin web password too (`--webpassword`, separate from the container root password) — auto-generated and shown once, same as root. Use `--static`. |
+| Floci | [`floci-lxc.sh`](ct-lxc/floci-lxc.sh) | Free local AWS/Azure/GCP emulator ([floci-io/floci](https://github.com/floci-io/floci)) + its web console. `--platform aws\|azure\|gcp`. Installs Docker inside the container — see [Floci: Docker-in-LXC](#floci-docker-in-lxc) below before using this one. Debian only, 20GB disk default. |
 
 ### Virtual machines — [`vm/`](vm/)
 
@@ -182,11 +183,58 @@ guess. That won't be true of every future service; see
 `src/ct-lxc/_template/main.sh` for what Alpine support actually requires
 before you add it to one.
 
+## Floci: Docker-in-LXC
+
+Floci is a different shape of service from the others here: it's not a
+vendor installer this project delegates to, it's a Docker Compose stack
+(Floci's chosen cloud emulator + [Floci UI](https://github.com/floci-io/floci-ui),
+its official web console). Several of the AWS/Azure/GCP services it emulates
+— EC2, RDS, ElastiCache, MSK, EKS, and more — work by spawning further real
+Docker containers of their own, so the container this script creates needs
+**Docker running inside an LXC container**, which needs both `nesting` and
+`keyctl` enabled. This script turns both on for you; it's not a setting you
+choose. Verified on a real host before committing to it: Docker install,
+`hello-world`, a real `postgres:16-alpine` container with its port reachable
+from the Proxmox host itself (not just inside the container) — all worked
+cleanly on an unprivileged LXC.
+
+`--platform aws|azure|gcp` picks which cloud to emulate (Floci's own fourth
+platform, OCI, isn't offered here — Floci UI has no OCI support yet, checked
+directly against its docs rather than assumed). All three were verified
+end-to-end through this project's own built script, not just by hand: created
+a container, launched a real EC2 instance through the AWS CLI, confirmed it
+was backed by a real `amazonlinux` Docker container, then did the same
+create/status/update/uninstall cycle for Azure and GCP.
+
+Two real bugs surfaced by that testing, both fixed:
+
+- **Orphaned containers on uninstall.** Floci's own EC2/RDS/etc. containers
+  aren't declared in the compose file, so `docker compose down` doesn't know
+  about them — one launched during testing was still sitting there, exited,
+  after a full uninstall. Every container Floci spawns this way carries a
+  `floci=true` Docker label regardless of which service created it (checked
+  via `docker inspect`, not assumed), so uninstall now finds and removes them
+  by that label, purge or not — they're live emulated infrastructure, not
+  data worth preserving.
+- **Invalid compose YAML for non-AWS platforms.** The generated compose file
+  wrote an `environment:` key with nothing under it for Azure/GCP (only AWS
+  needs any env overrides), which Docker Compose rejects outright:
+  `services.floci-gcp.environment must be a mapping`. Found by actually
+  running the built script against GCP, not by reading the generated file —
+  the manual pre-write verification had tested Azure/GCP with a hand-written
+  compose file that simply omitted the key, which the generating function
+  didn't originally match.
+
+Because this pulls a fresh image every time you use a Docker-backed service
+you haven't used before, it needs internet access from the container on an
+ongoing basis — unlike AdGuard Home or Pi-hole, this isn't "download once,
+run offline."
+
 ## Tested on
 
-Both `ct-lxc/adguard-home-lxc.sh` and `ct-lxc/pi-hole-lxc.sh` were verified
-end-to-end — create, status, update, uninstall, uninstall --purge, both OSes,
-and the failure paths — on:
+`ct-lxc/adguard-home-lxc.sh`, `ct-lxc/pi-hole-lxc.sh`, and `ct-lxc/floci-lxc.sh`
+were verified end-to-end — create, status, update, uninstall, uninstall
+--purge, and the failure paths — on:
 
 | | |
 |---|---|

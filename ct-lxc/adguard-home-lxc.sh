@@ -788,7 +788,7 @@ create_container() {
       --rootfs "${ROOTFS_STORAGE}:${DISK_GB}" \
       --net0 "$net_arg" \
       --unprivileged "$UNPRIVILEGED" \
-      --features "nesting=${NESTING}" \
+      --features "nesting=${NESTING},keyctl=${KEYCTL}" \
       --password "$ROOT_PASSWORD" \
       --onboot 1 \
       --start 0
@@ -1037,6 +1037,11 @@ CORES="${DEFAULT_CORES:-1}"
 MEMORY_MB="${DEFAULT_MEMORY_MB:-512}"
 UNPRIVILEGED="${DEFAULT_UNPRIVILEGED:-1}"
 NESTING="${DEFAULT_NESTING:-0}"
+# Docker-in-LXC needs both nesting and keyctl — verified on a real host (get.docker.com
+# install, hello-world, a real postgres container, port publishing reachable from the
+# PVE host) with this exact pair; nesting alone was not tested in isolation, so
+# services that need Docker should request both rather than assume nesting suffices.
+KEYCTL="${DEFAULT_KEYCTL:-0}"
 STATIC_CIDR=""
 GATEWAY=""
 TEMPLATE=""

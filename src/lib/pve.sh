@@ -236,7 +236,7 @@ create_container() {
       --rootfs "${ROOTFS_STORAGE}:${DISK_GB}" \
       --net0 "$net_arg" \
       --unprivileged "$UNPRIVILEGED" \
-      --features "nesting=${NESTING}" \
+      --features "nesting=${NESTING},keyctl=${KEYCTL}" \
       --password "$ROOT_PASSWORD" \
       --onboot 1 \
       --start 0

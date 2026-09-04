@@ -205,6 +205,45 @@ disk-space bug (disk was 50% free) before the actual cause — a stale
 open connection surviving a file swap — becomes obvious from the daemon's
 own log.
 
+## A service that runs Docker of its own (Floci)
+
+`floci` is the first service here that isn't a vendor shell installer — it's
+a Docker Compose stack, and several of what it emulates (EC2, RDS,
+ElastiCache, MSK, EKS, and more) work by spawning further Docker containers
+of their own via the Docker socket. Two lessons from building it, likely to
+recur for the next service shaped like this one:
+
+- **Docker inside an LXC needs both `nesting` and `keyctl`.** Verified
+  together on a real host (`DEFAULT_KEYCTL="1"` alongside `DEFAULT_NESTING=
+  "1"` in `lib/main.sh`/`lib/pve.sh`) — `nesting` alone was never tested in
+  isolation, so don't assume it's sufficient on its own. `get.docker.com`
+  (upstream Docker's own installer) has no Alpine path, so a Docker-needing
+  service is Debian-only until someone verifies Alpine's own Docker install
+  path (`apk add docker docker-cli-compose` + OpenRC) separately — don't
+  offer `alpine` in `DEFAULT_OS_CHOICES` on the strength of it working for
+  Debian.
+- **A tool that manages its own sibling containers via the Docker socket
+  will orphan them on `docker compose down`.** Compose only tears down what
+  it declared; anything Floci itself spawned (a running "EC2 instance", in
+  this case) is invisible to it and gets left behind, exited but not
+  removed. Confirmed on a real container, not assumed. If the tool labels
+  what it spawns (`docker inspect <container>` — Floci's carry `floci=true`
+  regardless of which service created them), filter and remove by that
+  label on uninstall; it's more precise than matching on name prefixes,
+  which risks catching containers Compose itself named after your own
+  project. Treat these as always-remove, not purge-gated — they're live
+  emulated infrastructure, not data worth preserving.
+
+Also: a compose YAML `environment:` key with nothing written under it is
+invalid (`services.X.environment must be a mapping`) — if a service's env
+vars are conditional per-platform/per-option, the *key itself* needs to be
+conditional too, not just its contents. Found by actually running `docker
+compose up` against the path that had no env vars to set, not by reading the
+generated file — the hand-written verification compose files for that path
+simply omitted the key, which the generating function didn't originally
+match. Generated YAML deserves the same "run it for real" scrutiny as
+generated shell.
+
 ## House rules
 
 These are the things that make the difference between a script that works on

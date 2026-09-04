@@ -228,6 +228,23 @@ if [[ -f "$ROOT/ct-lxc/pi-hole-lxc.sh" ]]; then
   else fail "pi-hole-lxc.sh restarts FTL after both install and update (gravity.db race fix) — found ${n}, need 2"; fi
 fi
 
+# Floci's EC2/RDS/ECS/... support spawns further sibling containers of its own
+# via the Docker socket — `docker compose down` never learns about these,
+# since compose only tracks what it declared. Confirmed on a real container:
+# after uninstall, a container launched during testing (a "t2.micro" backed
+# by a real amazonlinux image) was still sitting there, exited but not
+# removed. Fixed by filtering on the `floci=true` label every such container
+# carries (checked via `docker inspect`, not assumed) and removing them
+# explicitly. Can't be exercised without a real Docker daemon, so guard it
+# structurally the same way as the Pi-hole fix above.
+if [[ -f "$ROOT/ct-lxc/floci-lxc.sh" ]]; then
+  if grep -q "label=floci=true" "$ROOT/ct-lxc/floci-lxc.sh" && grep -q "remove_spawned_containers" "$ROOT/ct-lxc/floci-lxc.sh"; then
+    pass "floci-lxc.sh cleans up Floci-spawned sibling containers on uninstall (orphan fix)"
+  else
+    fail "floci-lxc.sh cleans up Floci-spawned sibling containers on uninstall (orphan fix)"
+  fi
+fi
+
 printf '\nInteractive guard rails\n'
 for script_path in ${scripts[@]+"${scripts[@]}"}; do
   is_shim "$script_path" && continue
@@ -262,13 +279,24 @@ for script_path in ${scripts[@]+"${scripts[@]}"}; do
   # old value or a probe function (storage_options et al.) prints a spurious
   # error into the transcript.
   if command -v python3 >/dev/null 2>&1; then
+    # Two things vary per service and would otherwise silently desync a fixed
+    # step count: whether the OS question appears at all (only when a service
+    # lists more than one DEFAULT_OS_CHOICES), and what "accept the default"
+    # means for the static-IP question (AdGuard/Pi-hole default it to yes,
+    # Floci does not set DEFAULT_PREFER_STATIC and so defaults to no). Query
+    # both from the service itself rather than assume either.
+    os_count="$( ( set +u; source "$lib" >/dev/null 2>&1; printf '%s' "$OS_CHOICES" ) 2>/dev/null | wc -w | tr -d ' ')"
+    os_step=""
+    [[ "${os_count:-1}" -gt 1 ]] && os_step=$'\n'
+
     wiz_cmd="set +u; source '$lib' >/dev/null 2>&1; CTID=105; CT_HOSTNAME=adguardhome; ROOTFS_STORAGE=local; DISK_GB=4; CORES=1; MEMORY_MB=512; BRIDGE=vmbr0; CHANNEL=release; configure_interactive; echo WIZ-HOST=\$CT_HOSTNAME; echo WIZ-MEM=\$MEMORY_MB; echo WIZ-STATIC=\$STATIC_CIDR; echo WIZ-DONE"
-    # ...OS?[default debian]->accept, static?[default y]->accept,
-    # CIDR(bad,rejected), CIDR(good), gateway, auto-generate password?
-    # [default y]->accept, then whatever the service's own svc_prompt asks
-    # (channel, upstream DNS, ...) — accepting ITS default too, since this
-    # runs against every service and each one asks something different.
-    wiz_steps=$'\nmydns\n\n\n\n1024\n\nnotanip\n192.168.9.53/24\n192.168.9.1\n\n\n'
+    # ...OS?[skipped unless this service offers >1] -> accept, static? -> "y"
+    # answered explicitly (not blank — its default varies per service), CIDR
+    # (bad, rejected), CIDR (good), gateway, auto-generate password?[default
+    # y] -> accept, then whatever the service's own svc_prompt asks (channel,
+    # upstream DNS, platform, ...) -> accept ITS default too, since this runs
+    # against every service and each one asks something different.
+    wiz_steps=$'\nmydns'"${os_step}"$'\n\n\n1024\ny\nnotanip\n192.168.9.53/24\n192.168.9.1\n\n\n'
     out="$(run_in_pty_scripted "$wiz_cmd" "WIZ-DONE" "$wiz_steps" 2>&1 || true)"
     if printf '%s' "$out" | grep -q '\[x\]'; then
       fail "$name wizard prints no spurious errors on a full pass ($(printf '%s' "$out" | grep '\[x\]' | head -1))"
@@ -292,29 +320,31 @@ for script_path in ${scripts[@]+"${scripts[@]}"}; do
     # default) must actually reach OS_ID — and, downstream, the TEMPLATE_
     # PATTERN that os_template_pattern derives from it. Wrong result here
     # would mean --os and the wizard disagree about which OS a run used.
-    os_cmd="set +u; source '$lib' >/dev/null 2>&1; CTID=106; CT_HOSTNAME=adguardhome; ROOTFS_STORAGE=local; DISK_GB=4; CORES=1; MEMORY_MB=512; BRIDGE=vmbr0; CHANNEL=release; configure_interactive >/dev/null; echo OS-RESULT=\$OS_ID; echo OS-DONE"
-    # CTID/hostname accept, OS pick "2" (alpine, by number), disk/cores/mem
-    # accept, decline static, decline auto-password, short/mismatch/good
-    # password, then accept whatever the service's own svc_prompt defaults
-    # to (differs per service).
-    os_steps=$'\n\n2\n\n\n\nn\nn\nshortpw\nCorrectHorse1\nWrongConfirm\nCorrectHorse1\nCorrectHorse1\n\n'
-    os_out="$(run_in_pty_scripted "$os_cmd" "OS-DONE" "$os_steps" 2>&1 || true)"
-    if printf '%s' "$os_out" | grep -q 'OS-RESULT=alpine'; then
-      pass "$name wizard: picking Alpine by number sets OS_ID=alpine"
-    else
-      fail "$name wizard: picking Alpine by number sets OS_ID=alpine"
+    # Only meaningful for a service that actually offers more than one OS —
+    # skip it for a single-OS service rather than force an answer onto a
+    # question that was never asked.
+    if [[ "${os_count:-1}" -gt 1 ]]; then
+      os_cmd="set +u; source '$lib' >/dev/null 2>&1; CTID=106; CT_HOSTNAME=adguardhome; ROOTFS_STORAGE=local; DISK_GB=4; CORES=1; MEMORY_MB=512; BRIDGE=vmbr0; CHANNEL=release; configure_interactive >/dev/null; echo OS-RESULT=\$OS_ID; echo OS-DONE"
+      # CTID/hostname accept, OS pick "2" (alpine, by number), disk/cores/mem
+      # accept, decline static, decline auto-password, short/mismatch/good
+      # password, then accept whatever the service's own svc_prompt defaults
+      # to (differs per service).
+      os_steps=$'\n\n2\n\n\n\nn\nn\nshortpw\nCorrectHorse1\nWrongConfirm\nCorrectHorse1\nCorrectHorse1\n\n'
+      os_out="$(run_in_pty_scripted "$os_cmd" "OS-DONE" "$os_steps" 2>&1 || true)"
+      if printf '%s' "$os_out" | grep -q 'OS-RESULT=alpine'; then
+        pass "$name wizard: picking Alpine by number sets OS_ID=alpine"
+      else
+        fail "$name wizard: picking Alpine by number sets OS_ID=alpine"
+      fi
     fi
 
     # The custom-password branch (ask_secret): decline auto-generate, mistype
     # the confirmation once, then get it right. Exercises hidden input and the
-    # length validator in the same pass.
+    # length validator in the same pass. Static IP is declined with an
+    # explicit "n" here (unambiguous regardless of this service's own
+    # default), so no OS-count-style branching is needed for that part.
     pw_cmd="set +u; source '$lib' >/dev/null 2>&1; CTID=105; CT_HOSTNAME=adguardhome; OS_ID=debian; ROOTFS_STORAGE=local; DISK_GB=4; CORES=1; MEMORY_MB=512; BRIDGE=vmbr0; CHANNEL=release; configure_interactive >/dev/null; echo PW-RESULT=\$ROOT_PASSWORD; echo PW-DONE"
-    # CTID/hostname/OS/disk/cores/memory accept defaults, decline static IP
-    # (this service defaults that question to yes, so it must be answered
-    # explicitly or the next two steps get consumed as a CIDR/gateway
-    # instead), decline auto-generate, then the short/mismatch/good password
-    # sequence, then accept whatever the service's own svc_prompt defaults to.
-    pw_steps=$'\n\n\n\n\n\nn\nn\nshortpw\nCorrectHorse1\nWrongConfirm\nCorrectHorse1\nCorrectHorse1\n\n'
+    pw_steps=$'\nmydns'"${os_step}"$'\n\n\n\nn\nn\nshortpw\nCorrectHorse1\nWrongConfirm\nCorrectHorse1\nCorrectHorse1\n\n'
     pw_out="$(run_in_pty_scripted "$pw_cmd" "PW-DONE" "$pw_steps" 2>&1 || true)"
     if printf '%s' "$pw_out" | grep -q 'PW-RESULT=CorrectHorse1'; then
       pass "$name wizard: custom password accepted after a short one and a mismatched confirmation"

@@ -59,6 +59,8 @@ DEFAULT_MEMORY_MB="512"
 #   DEFAULT_BRIDGE="vmbr0"
 #   DEFAULT_UNPRIVILEGED="1"     # 0 for things needing host devices
 #   DEFAULT_NESTING="0"          # 1 for anything running Docker inside
+#   DEFAULT_KEYCTL="0"           # 1 alongside nesting=1 for Docker — verified
+#                                 # together on a real host; see src/ct-lxc/floci
 #   DEFAULT_PREFER_STATIC="y"    # default answer to the static-IP question
 #
 # OS support. Every service gets Debian for free; add Alpine too by listing

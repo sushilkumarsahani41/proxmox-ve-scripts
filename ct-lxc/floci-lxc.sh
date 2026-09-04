@@ -1,176 +1,185 @@
 #!/usr/bin/env bash
 #
-# pi-hole-lxc.sh — Pi-hole on Proxmox VE, create to teardown.
-# Run this on a PVE host, as root.
+# floci-lxc.sh — Floci (free local AWS/Azure/GCP emulator) + Floci UI on
+# Proxmox VE, create to teardown. Run this on a PVE host, as root.
 #
-#   create              Create an LXC (Debian by default, or Alpine with
-#                       --os alpine — newest template the host has or can
-#                       fetch, matching its own architecture: amd64 or
-#                       arm64) and install Pi-hole inside it
-#   update <ctid>       Update Pi-hole on an existing container: backs up
-#                       /etc/pihole first, then delegates to `pihole -up`
-#                       (Pi-hole's own update path — this project does not
-#                       reimplement it). If FTL isn't running afterward, the
-#                       config backup is restored and you're told to check
-#                       it; there is no binary-level rollback, since `pihole
-#                       -up` touches system packages, not one swappable file
-#   uninstall <ctid>    Remove Pi-hole. Pi-hole's own uninstaller always
-#                       wipes /etc/pihole — there is no "keep config"
-#                       option upstream — so without --purge this backs it
-#                       up first and tells you where; --purge skips that
-#   status <ctid>       Show version, FTL/blocking state, listening ports
+#   create              Create a Debian LXC with Docker inside it, then run
+#                       Floci (your chosen cloud platform's emulator) and
+#                       Floci UI together via `docker compose`
+#   update <ctid>       docker compose pull && docker compose up -d —
+#                       backs up the persistent data volume first
+#   uninstall <ctid>    docker compose down (--purge also removes the data
+#                       volume and backups; Docker itself is left installed
+#                       either way — this removes the Floci stack, not your
+#                       container's whole Docker setup)
+#   status <ctid>       Show container status and emulator/UI health
 #
 # Usage:
-#   ./pi-hole-lxc.sh create [options]
-#   ./pi-hole-lxc.sh update <ctid>
-#   ./pi-hole-lxc.sh uninstall <ctid> [--purge]
-#   ./pi-hole-lxc.sh status <ctid>
+#   ./floci-lxc.sh create [options]
+#   ./floci-lxc.sh update <ctid>
+#   ./floci-lxc.sh uninstall <ctid> [--purge]
+#   ./floci-lxc.sh status <ctid>
 #
 # create options:
 #   -y, --defaults         Skip the questions and use the recommended values
 #   -i, --id <id>          Container ID (default: next free ID)
-#   -n, --hostname <name>  Container hostname (default: pihole)
-#   --os <name>             debian (default) or alpine — both verified
-#                           against Pi-hole's own installer on a real arm64
-#                           container; Debian has the wider package
-#                           ecosystem if you ever exec in and debug
+#   -n, --hostname <name>  Container hostname (default: floci)
 #   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
 #   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
 #   -b, --bridge <name>    Network bridge (default: vmbr0)
-#   -d, --disk <GB>        Disk size in GB (default: 2)
-#   -c, --cores <n>        CPU cores (default: 1)
-#   -m, --memory <MB>      RAM in MB (default: 512)
-#   --static <cidr>        Static IP, e.g. 192.168.1.53/24 (default: dhcp)
+#   -d, --disk <GB>        Disk size in GB (default: 20 — see note below)
+#   -c, --cores <n>        CPU cores (default: 2)
+#   -m, --memory <MB>      RAM in MB (default: 2048)
+#   --static <cidr>        Static IP, e.g. 192.168.1.60/24 (default: dhcp)
 #   --gateway <ip>         Gateway, required with --static
-#   --password <pass>      Container root password (default: random, shown
-#                           once after creation). pct enter <ctid> from the
-#                           host always works without one.
-#   --upstream <name>      Upstream DNS: cloudflare (default), google,
-#                           quad9, or opendns
-#   --webpassword <pass>   Pi-hole admin web UI password (default: random,
-#                           shown once after creation, min 8 characters —
-#                           this is separate from --password above, which is
-#                           the container's own root login)
+#   --password <pass>      Root password (default: random, shown once after
+#                           creation). pct enter <ctid> from the host always
+#                           works without one.
+#   --platform <name>      Which cloud to emulate: aws (default), azure, or
+#                           gcp. Floci UI supports these three — a 4th
+#                           platform, floci-oci, exists but has no UI support
+#                           yet, so it isn't offered here.
 #
 # Run with no options on a terminal and it asks about each setting, showing
 # the recommended value in brackets — Enter accepts it. Pass any option (or
 # -y) and it runs straight through without asking, so scripts stay
 # predictable.
 #
-# A DNS server wants a fixed address: a static IP is strongly recommended,
-# since every client on the LAN will be pointed at this container's IP.
+# WHY 20GB, NOT THE 2GB OTHER SCRIPTS IN THIS PROJECT USE: Floci itself is
+# small, but every AWS/Azure/GCP service backed by "real Docker" — RDS,
+# ElastiCache, MSK, EKS, OpenSearch, and more — pulls a real image (Postgres,
+# Redpanda, k3s, OpenSearch, each commonly 300MB-1GB+) the first time you use
+# it, and those images accumulate on this container's own disk as you
+# exercise more services. 20GB is comfortable for moderate use; pass a larger
+# --disk up front if you already know you'll run several heavy services
+# together, since growing an LXC's disk after creation is not a one-command
+# operation the way it is on a VM.
+#
+# This needs internet access from the container to pull the Floci images (and
+# every Docker-backed service's image, the first time you use that service) —
+# unlike AdGuard Home or Pi-hole, this is not a "download once, run offline"
+# service.
+#
+# WHAT THIS ACTUALLY INSTALLS: Docker (via get.docker.com — Debian only, no
+# --os choice here, since Alpine's Docker path is entirely different and
+# unverified for this), then `docker compose up` for your chosen platform's
+# emulator plus Floci UI. The container needs nesting AND keyctl enabled to
+# run Docker at all inside an LXC — this script turns both on for you, it is
+# not something you configure.
 #
 # ---------------------------------------------------------------------------
 # GENERATED FILE - DO NOT EDIT.
-# Built by build.sh from src/ct-lxc/pi-hole/main.sh and src/lib/*.sh.
+# Built by build.sh from src/ct-lxc/floci/main.sh and src/lib/*.sh.
 # Edit the source, then run ./build.sh. See CONTRIBUTING.md.
 # ---------------------------------------------------------------------------
 
-PVS_SCRIPT_FILENAME="pi-hole-lxc.sh"
-PVS_SCRIPT_URL="https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/pi-hole-lxc.sh"
+PVS_SCRIPT_FILENAME="floci-lxc.sh"
+PVS_SCRIPT_URL="https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/floci-lxc.sh"
 
 set -Eeuo pipefail
 
 # ---------------------------------------------------------------------------
 # Service definition
 # ---------------------------------------------------------------------------
-SERVICE_ID="pi-hole"
-SERVICE_NAME="Pi-hole"
-# @tagline The original network-wide DNS ad blocker
-# @alias pihole
+SERVICE_ID="floci"
+SERVICE_NAME="Floci"
+# @tagline Free local AWS/Azure/GCP emulator with a web console
 
-DEFAULT_HOSTNAME="pihole"
-DEFAULT_DISK_GB="2"
-DEFAULT_CORES="1"
-DEFAULT_MEMORY_MB="512"
-# A DNS server wants a fixed address for the same reason AdGuard Home does.
-DEFAULT_PREFER_STATIC="y"
-# Pi-hole v6's own installer supports apk natively (Alpine's "community"
-# repo, registers under OpenRC) — verified on a real arm64 container, the
-# same as AdGuard Home, and for the same reason: manage.sh below delegates
-# to Pi-hole's own installer/updater/uninstaller rather than reimplementing
-# service management, so it needed zero OS-specific code either.
-DEFAULT_OS="debian"
-DEFAULT_OS_CHOICES="debian alpine"
+DEFAULT_HOSTNAME="floci"
+DEFAULT_DISK_GB="20"
+DEFAULT_CORES="2"
+DEFAULT_MEMORY_MB="2048"
+# Docker needs both, verified together on a real host (see CONTRIBUTING.md).
+# Debian only: get.docker.com has no Alpine path, and Docker-in-LXC-on-Alpine
+# is a wholly separate unverified question this project has not tested.
+DEFAULT_NESTING="1"
+DEFAULT_KEYCTL="1"
 
-UPSTREAM="cloudflare"
-WEBPASSWORD=""
+PLATFORM="aws"
 
 pvs_usage_text() {
 cat <<'EOF_PVS_USAGE'
 
-pi-hole-lxc.sh — Pi-hole on Proxmox VE, create to teardown.
-Run this on a PVE host, as root.
+floci-lxc.sh — Floci (free local AWS/Azure/GCP emulator) + Floci UI on
+Proxmox VE, create to teardown. Run this on a PVE host, as root.
 
-  create              Create an LXC (Debian by default, or Alpine with
-                      --os alpine — newest template the host has or can
-                      fetch, matching its own architecture: amd64 or
-                      arm64) and install Pi-hole inside it
-  update <ctid>       Update Pi-hole on an existing container: backs up
-                      /etc/pihole first, then delegates to `pihole -up`
-                      (Pi-hole's own update path — this project does not
-                      reimplement it). If FTL isn't running afterward, the
-                      config backup is restored and you're told to check
-                      it; there is no binary-level rollback, since `pihole
-                      -up` touches system packages, not one swappable file
-  uninstall <ctid>    Remove Pi-hole. Pi-hole's own uninstaller always
-                      wipes /etc/pihole — there is no "keep config"
-                      option upstream — so without --purge this backs it
-                      up first and tells you where; --purge skips that
-  status <ctid>       Show version, FTL/blocking state, listening ports
+  create              Create a Debian LXC with Docker inside it, then run
+                      Floci (your chosen cloud platform's emulator) and
+                      Floci UI together via `docker compose`
+  update <ctid>       docker compose pull && docker compose up -d —
+                      backs up the persistent data volume first
+  uninstall <ctid>    docker compose down (--purge also removes the data
+                      volume and backups; Docker itself is left installed
+                      either way — this removes the Floci stack, not your
+                      container's whole Docker setup)
+  status <ctid>       Show container status and emulator/UI health
 
 Usage:
-  ./pi-hole-lxc.sh create [options]
-  ./pi-hole-lxc.sh update <ctid>
-  ./pi-hole-lxc.sh uninstall <ctid> [--purge]
-  ./pi-hole-lxc.sh status <ctid>
+  ./floci-lxc.sh create [options]
+  ./floci-lxc.sh update <ctid>
+  ./floci-lxc.sh uninstall <ctid> [--purge]
+  ./floci-lxc.sh status <ctid>
 
 create options:
   -y, --defaults         Skip the questions and use the recommended values
   -i, --id <id>          Container ID (default: next free ID)
-  -n, --hostname <name>  Container hostname (default: pihole)
-  --os <name>             debian (default) or alpine — both verified
-                          against Pi-hole's own installer on a real arm64
-                          container; Debian has the wider package
-                          ecosystem if you ever exec in and debug
+  -n, --hostname <name>  Container hostname (default: floci)
   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
   -b, --bridge <name>    Network bridge (default: vmbr0)
-  -d, --disk <GB>        Disk size in GB (default: 2)
-  -c, --cores <n>        CPU cores (default: 1)
-  -m, --memory <MB>      RAM in MB (default: 512)
-  --static <cidr>        Static IP, e.g. 192.168.1.53/24 (default: dhcp)
+  -d, --disk <GB>        Disk size in GB (default: 20 — see note below)
+  -c, --cores <n>        CPU cores (default: 2)
+  -m, --memory <MB>      RAM in MB (default: 2048)
+  --static <cidr>        Static IP, e.g. 192.168.1.60/24 (default: dhcp)
   --gateway <ip>         Gateway, required with --static
-  --password <pass>      Container root password (default: random, shown
-                          once after creation). pct enter <ctid> from the
-                          host always works without one.
-  --upstream <name>      Upstream DNS: cloudflare (default), google,
-                          quad9, or opendns
-  --webpassword <pass>   Pi-hole admin web UI password (default: random,
-                          shown once after creation, min 8 characters —
-                          this is separate from --password above, which is
-                          the container's own root login)
+  --password <pass>      Root password (default: random, shown once after
+                          creation). pct enter <ctid> from the host always
+                          works without one.
+  --platform <name>      Which cloud to emulate: aws (default), azure, or
+                          gcp. Floci UI supports these three — a 4th
+                          platform, floci-oci, exists but has no UI support
+                          yet, so it isn't offered here.
 
 Run with no options on a terminal and it asks about each setting, showing
 the recommended value in brackets — Enter accepts it. Pass any option (or
 -y) and it runs straight through without asking, so scripts stay
 predictable.
 
-A DNS server wants a fixed address: a static IP is strongly recommended,
-since every client on the LAN will be pointed at this container's IP.
+WHY 20GB, NOT THE 2GB OTHER SCRIPTS IN THIS PROJECT USE: Floci itself is
+small, but every AWS/Azure/GCP service backed by "real Docker" — RDS,
+ElastiCache, MSK, EKS, OpenSearch, and more — pulls a real image (Postgres,
+Redpanda, k3s, OpenSearch, each commonly 300MB-1GB+) the first time you use
+it, and those images accumulate on this container's own disk as you
+exercise more services. 20GB is comfortable for moderate use; pass a larger
+--disk up front if you already know you'll run several heavy services
+together, since growing an LXC's disk after creation is not a one-command
+operation the way it is on a VM.
+
+This needs internet access from the container to pull the Floci images (and
+every Docker-backed service's image, the first time you use that service) —
+unlike AdGuard Home or Pi-hole, this is not a "download once, run offline"
+service.
+
+WHAT THIS ACTUALLY INSTALLS: Docker (via get.docker.com — Debian only, no
+--os choice here, since Alpine's Docker path is entirely different and
+unverified for this), then `docker compose up` for your chosen platform's
+emulator plus Floci UI. The container needs nesting AND keyctl enabled to
+run Docker at all inside an LXC — this script turns both on for you, it is
+not something you configure.
 EOF_PVS_USAGE
 }
 manage_script() {
 cat <<'EOF_MANAGE_SCRIPT'
 #!/usr/bin/env bash
-# In-container management for Pi-hole. Pushed to /usr/local/sbin/pi-hole-
+# In-container management for Floci. Pushed to /usr/local/sbin/floci-
 # manage.sh and re-pushed on every command, so the container always matches
 # the host script's version.
 #
-# Delegates everything it reasonably can to Pi-hole's own tooling — the
-# vendor installer for install/update, `pihole uninstall` for removal,
-# `pihole status`/`-v` for state — the same principle as every other service
-# in this project: don't reimplement what upstream already maintains.
+# Unlike AdGuard Home or Pi-hole, there is no vendor shell installer here —
+# Floci ships as a Docker image, so this script's job is: get Docker running
+# inside this LXC (nothing else in this project needs that), write a
+# docker-compose.yaml for the chosen platform + Floci UI, and let `docker
+# compose` do what it already does well.
 set -Eeuo pipefail
 
 # lib/agent-ui.sh — the small preamble every in-container management script
@@ -240,239 +249,314 @@ restart_service() {
   fi
 }
 
-PIHOLE_BIN="/usr/local/bin/pihole"
-BACKUP_ROOT="/var/backups/pihole"
-VENDOR_INSTALL_URL="https://install.pi-hole.net"
-DNS1="1.1.1.1"
-DNS2="1.0.0.1"
-WEBPASSWORD=""
+FLOCI_DIR="/opt/floci"
+COMPOSE_FILE="${FLOCI_DIR}/compose.yaml"
+DATA_DIR="${FLOCI_DIR}/data"
+BACKUP_ROOT="/var/backups/floci"
+PLATFORM="aws"
 PURGE=0
 
-is_installed() { [[ -x "$PIHOLE_BIN" ]]; }
-# Separate from is_installed, same reasoning as AdGuard Home's manage.sh: a
-# plain `uninstall` leaves the config backup behind (Pi-hole's own
-# uninstaller wipes /etc/pihole itself, this project's backup is what
-# actually keeps it — see cmd_uninstall), so "uninstall, then decide to
-# purge after all" must not be refused for having no binary left to check.
-has_data() { [[ -d "$BACKUP_ROOT" ]] && [[ -n "$(ls -A "$BACKUP_ROOT" 2>/dev/null)" ]]; }
+# Kept in sync with the case functions of the same name in the host-side
+# main.sh (which is not part of what @embed inlines here) — see the comment
+# on svc_install_args there for why this table exists in two places instead
+# of one.
+platform_image() {
+  case "$1" in
+    aws)   printf 'floci/floci:latest' ;;
+    azure) printf 'floci/floci-az:latest' ;;
+    gcp)   printf 'floci/floci-gcp:latest' ;;
+    *) die "unknown platform '${1}'" ;;
+  esac
+}
 
-pihole_version() { "$PIHOLE_BIN" -v 2>&1 | sed -n 's/^Core version is //p' | awk '{print $1}'; }
+platform_service_name() {
+  case "$1" in
+    aws)   printf 'floci' ;;
+    azure) printf 'floci-az' ;;
+    gcp)   printf 'floci-gcp' ;;
+    *) die "unknown platform '${1}'" ;;
+  esac
+}
 
-# Pi-hole's own installer requires bash (uses arrays, mapfile) even though it
-# runs fine on Alpine, whose base image has neither bash nor curl — but by
-# the time this script runs, the host's OS bootstrap (see lib/pve.sh) has
-# already guaranteed both exist, so this just needs curl for the download.
-run_vendor_installer() {
-  local tmp_script rc=0
+platform_port() {
+  case "$1" in
+    aws)   printf '4566' ;;
+    azure) printf '4577' ;;
+    gcp)   printf '4588' ;;
+    *) die "unknown platform '${1}'" ;;
+  esac
+}
+
+platform_health_path() {
+  case "$1" in
+    aws|azure) printf '/_floci/health' ;;
+    gcp)       printf '/_floci-gcp/health' ;;
+    *) die "unknown platform '${1}'" ;;
+  esac
+}
+
+platform_endpoint_env() {
+  case "$1" in
+    aws)   printf 'FLOCI_ENDPOINT' ;;
+    azure) printf 'FLOCI_AZURE_ENDPOINT' ;;
+    gcp)   printf 'FLOCI_GCP_ENDPOINT' ;;
+    *) die "unknown platform '${1}'" ;;
+  esac
+}
+
+is_installed() { [[ -f "$COMPOSE_FILE" ]]; }
+has_data() { [[ -d "$DATA_DIR" ]] || [[ -d "$BACKUP_ROOT" ]]; }
+
+docker_compose() {
+  ( cd "$FLOCI_DIR" && docker compose "$@" )
+}
+
+# Docker itself, not part of the Debian base image any more than curl is —
+# get.docker.com is upstream Docker's own official installer (same one this
+# project's manual verification used), and it brings the compose plugin with
+# it, so there's nothing further to install for `docker compose`. There is
+# no Alpine branch here: get.docker.com does not support it, and this
+# service's DEFAULT_OS_CHOICES (in main.sh) is Debian-only for exactly that
+# reason.
+ensure_docker() {
+  command -v docker >/dev/null 2>&1 && return 0
+  info "installing Docker (this container needs it for Floci's Docker-backed services)"
+  local tmp_script
   tmp_script="$(mktemp)"
-  if curl -fsSL "$VENDOR_INSTALL_URL" -o "$tmp_script"; then
-    PIHOLE_SKIP_OS_CHECK=true bash "$tmp_script" "$@" || rc=$?
-  else
-    rc=1
-  fi
+  curl -fsSL https://get.docker.com -o "$tmp_script" || { rm -f "$tmp_script"; die "failed to download Docker's installer"; }
+  sh "$tmp_script" >/dev/null 2>&1 || { rm -f "$tmp_script"; die "Docker installation failed"; }
   rm -f "$tmp_script"
-  return "$rc"
+  systemctl enable --now docker >/dev/null 2>&1 || true
+  command -v docker >/dev/null 2>&1 || die "Docker installer finished but 'docker' is still not on PATH"
 }
 
-# Pi-hole's fresh-install wizard is a sequence of whiptail dialogs with no
-# flag to skip them — `--unattended` alone only silences apt's own prompts.
-# The documented way around this (confirmed against the real installer
-# source, not assumed) is to seed a legacy setupVars.conf before running it:
-# the installer's very first check is whether a config already exists, and
-# if it does, it treats the run as an update/migration instead of a fresh
-# install and skips every dialog, migrating these values into Pi-hole v6's
-# own pihole.toml itself.
-seed_setup_vars() {
-  local ip_cidr
-  # container_ip() (lib/agent-ui.sh) deliberately strips the prefix length for
-  # URLs — Pi-hole's setupVars.conf wants the real one back, not a hardcoded
-  # guess: this container could be on a /16 or anything else the LAN uses.
-  ip_cidr="$(ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9./]+' | cut -d' ' -f2)"
-  mkdir -p /etc/pihole
-  cat > /etc/pihole/setupVars.conf <<EOF
-PIHOLE_INTERFACE=eth0
-IPV4_ADDRESS=${ip_cidr}
-PIHOLE_DNS_1=${DNS1}
-PIHOLE_DNS_2=${DNS2}
-QUERY_LOGGING=true
-INSTALL_WEB_SERVER=true
-INSTALL_WEB_INTERFACE=true
-LIGHTTPD_ENABLED=true
-CACHE_SIZE=10000
-DNS_FQDN_REQUIRED=true
-DNS_BOGUS_PRIV=true
-DNSMASQ_LISTENING=all
-BLOCKING_ENABLED=true
-WEBUIBOXEDLAYOUT=boxed
-REV_SERVER=false
-EOF
+# Writes the compose file fresh every time (install and update both call
+# this), so switching how a platform is wired here takes effect on the next
+# `update` without anyone having to hand-edit a file inside the container.
+write_compose_file() {
+  local platform="$1" svc image port endpoint_env
+  svc="$(platform_service_name "$platform")"
+  image="$(platform_image "$platform")"
+  port="$(platform_port "$platform")"
+  endpoint_env="$(platform_endpoint_env "$platform")"
+
+  mkdir -p "$FLOCI_DIR" "$DATA_DIR"
+
+  {
+    echo "services:"
+    echo "  ${svc}:"
+    echo "    image: ${image}"
+    echo "    restart: unless-stopped"
+    echo "    ports:"
+    echo "      - \"${port}:${port}\""
+    echo "    volumes:"
+    # Docker-backed services (Lambda, RDS, ElastiCache, MSK, EKS, and more,
+    # depending on platform) need this to spawn and manage sibling
+    # containers — see README's "Real Docker Integration" section. Left out
+    # entirely means those specific services fail; everything else still
+    # works fine without it.
+    echo "      - /var/run/docker.sock:/var/run/docker.sock"
+    echo "      - ${DATA_DIR}:/app/data"
+    echo "    user: root"
+    # The `environment:` key itself is only written when there's something
+    # under it — an empty mapping isn't valid compose YAML, and only aws
+    # currently needs any (see below). Found by actually running this
+    # through `docker compose up` for gcp, not by reading the generated file:
+    # `services.floci-gcp.environment must be a mapping` — this project's
+    # manual pre-write verification tested Azure/Debian by hand with a
+    # compose file that simply omitted the key entirely for those platforms,
+    # which this function did not originally match.
+    if [[ "$platform" == "aws" ]]; then
+      echo "    environment:"
+      # FLOCI_HOSTNAME: without it, Floci embeds "localhost" into every URL
+      # it generates (SQS QueueUrls, SNS callback URLs, ...), which breaks
+      # the moment anything other than Floci itself needs to reach that URL
+      # — Lambda containers Floci spawns, most notably. Confirmed necessary
+      # against a real container, not assumed from the docs alone.
+      echo "      FLOCI_HOSTNAME: ${svc}"
+      echo "      FLOCI_STORAGE_MODE: persistent"
+      echo "      FLOCI_STORAGE_PERSISTENT_PATH: /app/data"
+    fi
+    echo ""
+    echo "  floci-ui:"
+    echo "    image: floci/floci-ui:latest"
+    echo "    restart: unless-stopped"
+    echo "    ports:"
+    echo "      - \"4500:4500\""
+    echo "    environment:"
+    echo "      ${endpoint_env}: http://${svc}:${port}"
+    echo "      AWS_REGION: us-east-1"
+    echo "      AWS_ACCESS_KEY_ID: test"
+    echo "      AWS_SECRET_ACCESS_KEY: test"
+    echo "    depends_on:"
+    echo "      - ${svc}"
+  } > "$COMPOSE_FILE"
+
+  printf '%s' "$platform" > "${FLOCI_DIR}/platform"
 }
 
-backup_state() {
-  local backup_dir="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
-  mkdir -p "$backup_dir"
-  [[ -d /etc/pihole ]] && cp -a /etc/pihole "${backup_dir}/pihole"
-  echo "$backup_dir"
-}
+installed_platform() { cat "${FLOCI_DIR}/platform" 2>/dev/null || echo "aws"; }
 
-restore_state() {
-  local backup_dir="$1"
-  [[ -d "${backup_dir}/pihole" ]] || return 0
-  rm -rf /etc/pihole
-  cp -a "${backup_dir}/pihole" /etc/pihole
-}
-
-# Checks FTL specifically, not "blocking enabled" — a container with
-# blocking deliberately switched off by the user is still a running,
-# healthy Pi-hole, and must not read as broken.
-service_is_running() { "$PIHOLE_BIN" status 2>&1 | grep -q "FTL is listening"; }
-
-blocking_state() {
-  if "$PIHOLE_BIN" status 2>&1 | grep -q "blocking is enabled"; then
-    echo "enabled"
-  else
-    echo "disabled"
-  fi
+service_healthy() {
+  local platform="$1" port path
+  port="$(platform_port "$platform")"
+  path="$(platform_health_path "$platform")"
+  curl -fsS -o /dev/null "http://localhost:${port}${path}" 2>/dev/null \
+    && curl -fsS -o /dev/null "http://localhost:4500" 2>/dev/null
 }
 
 wait_for_service() {
-  local tries=15
+  local platform="$1" tries=30
   while (( tries > 0 )); do
-    service_is_running && return 0
-    sleep 1
+    service_healthy "$platform" && return 0
+    sleep 2
     tries=$(( tries - 1 ))
   done
   return 1
 }
 
+backup_state() {
+  local backup_dir="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$backup_dir"
+  [[ -d "$DATA_DIR" ]] && cp -a "$DATA_DIR" "${backup_dir}/data"
+  echo "$backup_dir"
+}
+
+restore_state() {
+  local backup_dir="$1"
+  [[ -d "${backup_dir}/data" ]] || return 0
+  rm -rf "$DATA_DIR"
+  cp -a "${backup_dir}/data" "$DATA_DIR"
+}
+
 print_access_info() {
   echo
-  ok "Pi-hole admin UI: http://$(container_ip)/admin"
+  ok "Floci console: http://$(container_ip):4500"
 }
 
 cmd_install() {
   require_root
   ensure_pkg curl
-  is_installed && die "Pi-hole is already installed — use 'update' instead"
+  is_installed && die "Floci is already installed — use 'update' instead"
 
-  seed_setup_vars
-  run_vendor_installer --unattended || die "Pi-hole installer failed — see /etc/pihole/install.log"
+  ensure_docker
+  write_compose_file "$PLATFORM"
 
-  is_installed || die "installer reported success but ${PIHOLE_BIN} is missing"
+  info "pulling images and starting Floci (${PLATFORM}) + Floci UI"
+  docker_compose up -d || die "docker compose up failed — see: docker compose -f ${COMPOSE_FILE} logs"
 
-  # The vendor installer starts pihole-FTL *before* it finishes building and
-  # atomically swapping in the real gravity database (its own log literally
-  # says "Restarting pihole-FTL service" first, then "Creating new gravity
-  # database" / "Swapping databases" afterward). FTL keeps its database
-  # connection open across that swap, which leaves it holding a stale
-  # reference to the pre-swap file — confirmed on a real container, where
-  # every domainlist/adlist write failed with "attempt to write a readonly
-  # database" until FTL was restarted. `pihole reloaddns`/`reloadlists`
-  # explicitly do not restart the process, so only a real restart clears it.
-  restart_service pihole-FTL
-  wait_for_service || die "pihole-FTL did not come back up after the post-install restart"
+  if ! wait_for_service "$PLATFORM"; then
+    warn "Floci did not become healthy within the expected time"
+    docker_compose ps >&2 || true
+    die "install did not verify healthy — check: docker compose -f ${COMPOSE_FILE} logs"
+  fi
 
-  "$PIHOLE_BIN" setpassword "$WEBPASSWORD" >/dev/null 2>&1 \
-    || warn "Pi-hole installed, but setting the admin password failed — set one with: pihole setpassword"
-
-  ok "Pi-hole installed"
+  ok "Floci installed"
   print_access_info
 }
 
-# Delegates the actual upgrade to `pihole -up` — Pi-hole's own update path,
-# which touches system packages (apt/apk) across several components (FTL,
-# the web interface, core scripts), not one file this project could swap
-# back on failure the way AdGuard Home's single static binary allows. So the
-# safety net here is narrower and honestly described: /etc/pihole (config,
-# gravity database, custom lists) is backed up and restored if anything
-# looks wrong afterward, but there is no undo for the software packages
-# themselves — `pihole -up` is Pi-hole's own maintained upgrade path, and
-# trusted the same way this project trusts every other vendor installer.
+# `docker compose pull` + `up -d` recreates any container whose image
+# actually changed and leaves the rest alone — this is Docker's own update
+# mechanism, not something this project reimplements. The data volume is
+# backed up first regardless, since an image update rebuilding a container
+# is exactly the kind of operation that's cheap to guard even when it's
+# expected to be safe.
 cmd_update() {
   require_root
-  is_installed || die "Pi-hole is not installed — use 'install' instead"
+  is_installed || die "Floci is not installed — use 'install' instead"
 
-  local old_version backup_dir
-  old_version="$(pihole_version)"
-  info "current version: ${old_version}"
+  local platform backup_dir
+  platform="$(installed_platform)"
+
+  # Regenerated, not left as whatever install last wrote: this file is ours,
+  # not a vendor's, so a fix to write_compose_file should reach an existing
+  # container the same way a fix to this whole script does — on the next
+  # command that touches it, matching every other manage.sh in this project.
+  write_compose_file "$platform"
 
   backup_dir="$(backup_state)"
-  ok "backed up /etc/pihole to ${backup_dir}"
+  ok "backed up data to ${backup_dir}"
 
-  if ! "$PIHOLE_BIN" -up; then
-    warn "pihole -up reported failure — restoring config from backup"
-    restore_state "$backup_dir"
-    die "update failed, config restored from ${backup_dir} — packages may still be partially updated; consider 'pihole -r' (repair) or checking /etc/pihole/install.log"
+  if ! docker_compose pull; then
+    warn "docker compose pull failed — leaving the running containers untouched"
+    die "update failed, nothing was changed"
   fi
 
-  # Same reasoning as cmd_install's restart: an actual version bump runs
-  # through gravity-touching steps again internally, and FTL keeping a
-  # database connection open across that is what causes the stale-reference
-  # bug documented there — `service_is_running` below only checks that FTL
-  # is listening for DNS, which stays true even when writes are broken, so a
-  # restart here is what actually closes the gap rather than the check that
-  # follows it.
-  restart_service pihole-FTL
-
-  if ! wait_for_service; then
-    warn "FTL did not come back up after update — restoring config from backup"
+  if ! docker_compose up -d; then
+    warn "docker compose up failed after pulling new images — restoring data from backup"
     restore_state "$backup_dir"
-    die "update failed, config restored from ${backup_dir} — packages were updated by 'pihole -up' itself and are not rolled back; consider 'pihole -r' (repair)"
+    die "update failed, data restored from ${backup_dir} — check: docker compose -f ${COMPOSE_FILE} logs"
   fi
 
-  local new_version
-  new_version="$(pihole_version)"
-  ok "updated: ${old_version} -> ${new_version}"
+  if ! wait_for_service "$platform"; then
+    warn "Floci did not come back up healthy after the update — restoring data from backup"
+    restore_state "$backup_dir"
+    docker_compose up -d >/dev/null 2>&1 || true
+    die "update failed, data restored from ${backup_dir} — the images themselves are not rolled back by this, only the data; check: docker compose -f ${COMPOSE_FILE} logs"
+  fi
+
+  ok "updated"
   print_access_info
 }
 
-# Pi-hole's own uninstaller always deletes /etc/pihole outright — there is no
-# upstream flag for "remove the software but keep my config", the way
-# AdGuard Home's uninstall naturally leaves its install directory alone. So
-# without --purge, this project backs /etc/pihole up *before* calling it,
-# which is what actually delivers on "keep config/data" here.
+# Floci's EC2/RDS/ECS/... support works by spawning further containers of
+# its own via the Docker socket — a running "EC2 instance" is a real
+# container `docker compose` never declared and therefore does not know to
+# stop. Confirmed on a real container: after `docker compose down`, an
+# instance launched during testing was still sitting there, exited but not
+# removed. Every container Floci spawns this way carries the label
+# `floci=true` regardless of which service created it (checked via `docker
+# inspect`, not assumed) — a precise, unambiguous filter, unlike matching on
+# name prefixes which would risk catching containers `docker compose` itself
+# named after our own project. These are always cleaned up, purge or not:
+# they are live emulated infrastructure that only means anything while Floci
+# is running, not data worth preserving the way /opt/floci/data is.
+remove_spawned_containers() {
+  docker ps -aq --filter 'label=floci=true' 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1
+  return 0
+}
+
 cmd_uninstall() {
   require_root
   if ! is_installed && ! has_data; then
-    die "Pi-hole is not installed and there is no backed-up config to remove"
+    die "Floci is not installed and there is no backed-up data to remove"
   fi
 
   if is_installed; then
-    local backup_dir="" log rc=0
+    local backup_dir=""
     if [[ "$PURGE" -eq 0 ]]; then
       backup_dir="$(backup_state)"
     fi
-    log="$(mktemp)"
-    printf 'y\ny\n' | "$PIHOLE_BIN" uninstall >"$log" 2>&1 || rc=$?
-    if [[ "$rc" -ne 0 ]]; then
-      sed 's/^/    /' "$log" >&2
-      rm -f "$log"
-      die "pihole uninstall reported failure (exit ${rc})${backup_dir:+ — config was still backed up to ${backup_dir}}"
-    fi
-    rm -f "$log"
-    if [[ -n "$backup_dir" ]]; then
-      ok "Pi-hole removed, config/gravity database kept at ${backup_dir}"
+    docker_compose down >/dev/null 2>&1 || warn "docker compose down reported an issue — continuing"
+    remove_spawned_containers
+    rm -f "$COMPOSE_FILE" "${FLOCI_DIR}/platform"
+    if [[ "$PURGE" -eq 0 ]]; then
+      ok "Floci removed, data kept at ${backup_dir}"
     else
-      ok "Pi-hole removed"
+      rm -rf "$DATA_DIR"
+      ok "Floci removed"
     fi
   fi
 
   if [[ "$PURGE" -eq 1 ]]; then
     rm -rf "$BACKUP_ROOT"
-    ok "all backed-up config removed"
+    ok "all backed-up data removed"
   fi
+
+  info "Docker itself was left installed — this removes the Floci stack, not the container's Docker setup"
 }
 
 cmd_status() {
-  is_installed || die "Pi-hole is not installed"
-  echo "version:  $(pihole_version)"
-  echo "service:  $(service_is_running && echo running || echo stopped)"
-  echo "blocking: $(blocking_state)"
-  echo "address:  http://$(container_ip)/admin"
-  if command -v ss >/dev/null 2>&1; then
-    echo "ports:"
-    ss -ltunp 2>/dev/null | awk 'NR==1 || /:(53|80|443) /' | sed 's/^/  /' || true
-  fi
+  is_installed || die "Floci is not installed"
+  local platform port
+  platform="$(installed_platform)"
+  port="$(platform_port "$platform")"
+  echo "platform: ${platform}"
+  echo "service:  $(service_healthy "$platform" && echo running || echo unhealthy)"
+  echo "console:  http://$(container_ip):4500"
+  echo "api:      http://$(container_ip):${port}"
+  echo
+  docker_compose ps 2>&1 || true
 }
 
 main() {
@@ -480,9 +564,7 @@ main() {
   if [[ -n "$cmd" ]]; then shift; fi
   while (( "$#" )); do
     case "$1" in
-      --dns1) DNS1="$2"; shift 2 ;;
-      --dns2) DNS2="$2"; shift 2 ;;
-      --webpassword) WEBPASSWORD="$2"; shift 2 ;;
+      --platform) PLATFORM="$2"; shift 2 ;;
       --purge) PURGE=1; shift ;;
       *) die "unknown option: $1" ;;
     esac
@@ -1399,26 +1481,66 @@ pvs_main() {
 }
 
 # ---------------------------------------------------------------------------
-# Upstream DNS choices. A plain case, not a lookup table, for the same
-# reason lib/pve.sh's OS helpers are one: bash 3.2 has no associative arrays.
+# Platform choices. A plain case, not a lookup table, for the same reason
+# lib/pve.sh's OS helpers are one: bash 3.2 has no associative arrays. Every
+# value here was verified for real — image pulled, container started,
+# health-checked, and reached through Floci UI's own status probe — on a
+# real arm64 host, not inferred from documentation alone.
 # ---------------------------------------------------------------------------
-upstream_label() {
+platform_label() {
   case "$1" in
-    cloudflare) printf 'Cloudflare (1.1.1.1)' ;;
-    google)     printf 'Google (8.8.8.8)' ;;
-    quad9)      printf 'Quad9 (9.9.9.9)' ;;
-    opendns)    printf 'OpenDNS (208.67.222.222)' ;;
+    aws)   printf 'AWS (Floci)' ;;
+    azure) printf 'Azure (Floci-AZ)' ;;
+    gcp)   printf 'GCP (Floci-GCP)' ;;
     *) printf '%s' "$1" ;;
   esac
 }
 
-upstream_ips() {
+platform_image() {
   case "$1" in
-    cloudflare) printf '1.1.1.1 1.0.0.1' ;;
-    google)     printf '8.8.8.8 8.8.4.4' ;;
-    quad9)      printf '9.9.9.9 149.112.112.112' ;;
-    opendns)    printf '208.67.222.222 208.67.220.220' ;;
-    *) die "unknown upstream '${1}'" ;;
+    aws)   printf 'floci/floci:latest' ;;
+    azure) printf 'floci/floci-az:latest' ;;
+    gcp)   printf 'floci/floci-gcp:latest' ;;
+    *) die "unknown platform '${1}'" ;;
+  esac
+}
+
+platform_service_name() {
+  case "$1" in
+    aws)   printf 'floci' ;;
+    azure) printf 'floci-az' ;;
+    gcp)   printf 'floci-gcp' ;;
+    *) die "unknown platform '${1}'" ;;
+  esac
+}
+
+platform_port() {
+  case "$1" in
+    aws)   printf '4566' ;;
+    azure) printf '4577' ;;
+    gcp)   printf '4588' ;;
+    *) die "unknown platform '${1}'" ;;
+  esac
+}
+
+# Confirmed by hand: AWS and Azure share the same health path, GCP does not.
+platform_health_path() {
+  case "$1" in
+    aws|azure) printf '/_floci/health' ;;
+    gcp)       printf '/_floci-gcp/health' ;;
+    *) die "unknown platform '${1}'" ;;
+  esac
+}
+
+# The env var Floci UI needs to find this platform's emulator by its compose
+# service name instead of its own default of localhost (which would not
+# resolve to anything from inside the UI's own container).
+platform_endpoint_env() {
+  case "$1" in
+    aws)   printf 'FLOCI_ENDPOINT' ;;
+    azure) printf 'FLOCI_AZURE_ENDPOINT' ;;
+    gcp)   printf 'FLOCI_GCP_ENDPOINT' ;;
+    *) die "unknown platform '${1}'" ;;
   esac
 }
 
@@ -1427,55 +1549,36 @@ upstream_ips() {
 # ---------------------------------------------------------------------------
 svc_parse_option() {
   case "$1" in
-    --upstream)
-      [[ -n "${2:-}" ]] || die "--upstream needs a value (cloudflare, google, quad9 or opendns)"
+    --platform)
+      [[ -n "${2:-}" ]] || die "--platform needs a value (aws, azure or gcp)"
       case "$2" in
-        cloudflare|google|quad9|opendns) ;;
-        *) die "--upstream must be one of: cloudflare, google, quad9, opendns (got '$2')" ;;
+        aws|azure|gcp) ;;
+        *) die "--platform must be one of: aws, azure, gcp (got '$2')" ;;
       esac
-      UPSTREAM="$2"; SVC_OPT_SHIFT=2; return 0 ;;
-    --webpassword)
-      [[ -n "${2:-}" ]] || die "--webpassword needs a value"
-      v_password "$2" || die "--webpassword must be at least 8 characters"
-      WEBPASSWORD="$2"; SVC_OPT_SHIFT=2; return 0 ;;
+      PLATFORM="$2"; SVC_OPT_SHIFT=2; return 0 ;;
   esac
   return 1
 }
 
-# Generated here, not up front with ROOT_PASSWORD in lib/main.sh: this is a
-# Pi-hole-specific credential (the web admin login), not something every
-# service has, so it stays entirely inside this file rather than growing the
-# shared library for one service's needs. Timing matches ROOT_PASSWORD's own
-# lazy-generate — resolved once, right before install, after the wizard (if
-# any) has had its say.
-svc_install_args() {
-  [[ -n "$WEBPASSWORD" ]] || WEBPASSWORD="$(generate_password)"
-  # Resolved to actual IPs here, not passed as the raw "cloudflare" id: the
-  # upstream_ips lookup above is defined in this host-side file and is not
-  # part of what @embed inlines into manage.sh, so manage.sh never sees it —
-  # passing IPs across that boundary avoids needing the same table twice.
-  local ips
-  ips="$(upstream_ips "$UPSTREAM")"
-  SVC_INSTALL_ARGS=(--dns1 "${ips%% *}" --dns2 "${ips##* }" --webpassword "$WEBPASSWORD")
-}
+svc_install_args() { SVC_INSTALL_ARGS=(--platform "$PLATFORM"); }
 
 svc_prompt() {
-  UPSTREAM="$(ask_choice "Upstream DNS provider" "$UPSTREAM" "$(printf 'cloudflare\ngoogle\nquad9\nopendns')")"
+  PLATFORM="$(ask_choice "Cloud platform to emulate" "$PLATFORM" "$(printf 'aws\nazure\ngcp')")"
 }
 
 svc_plan_lines() {
-  echo " Upstream DNS  : $(upstream_label "$UPSTREAM")"
-  if [[ -n "$WEBPASSWORD" ]]; then
-    echo " Web password  : (as entered, hidden)"
-  else
-    echo " Web password  : (auto-generated, shown once after creation)"
-  fi
+  echo " Platform      : $(platform_label "$PLATFORM")"
+  echo " Disk note     : Docker images for services you use accumulate here"
 }
 
 svc_summary_lines() {
-  echo " Admin UI      : http://${2}/admin"
-  echo " Admin password: ${WEBPASSWORD}"
-  echo " DNS server    : ${2}:53  (point your router/clients here)"
+  local ip="$2" port
+  port="$(platform_port "$PLATFORM")"
+  echo " Console (UI)  : http://${ip}:4500"
+  echo " Cloud API     : http://${ip}:${port} ($(platform_label "$PLATFORM"))"
+  if [[ "$PLATFORM" == "aws" ]]; then
+    echo " AWS creds     : any non-empty value works (e.g. test / test)"
+  fi
 }
 
 pvs_main "$@"
