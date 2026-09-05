@@ -74,7 +74,6 @@ set -Eeuo pipefail
 SERVICE_ID="adguard-home-docker"
 SERVICE_NAME="AdGuard Home (Docker)"
 # @tagline AdGuard Home via the official Docker image
-# @alias adguardhome-docker
 
 DEFAULT_HOSTNAME="adguard-docker"
 DEFAULT_DISK_GB="4"

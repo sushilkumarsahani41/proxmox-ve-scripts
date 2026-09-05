@@ -72,7 +72,6 @@ set -Eeuo pipefail
 SERVICE_ID="pi-hole-docker"
 SERVICE_NAME="Pi-hole (Docker)"
 # @tagline Pi-hole via the official Docker image
-# @alias pihole-docker
 
 DEFAULT_HOSTNAME="pihole-docker"
 DEFAULT_DISK_GB="4"
