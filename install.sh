@@ -21,6 +21,7 @@ PVS_CATALOG="
 adguard-home|AdGuard Home|Network-wide DNS ad and tracker blocking|ct-lxc/adguard-home-lxc.sh|adguardhome
 floci|Floci|Free local AWS/Azure/GCP emulator with a web console|ct-lxc/floci-lxc.sh|
 pi-hole|Pi-hole|The original network-wide DNS ad blocker|ct-lxc/pi-hole-lxc.sh|pihole
+sharkshell|SharkShell|Self-hosted web SSH client with 2FA and an MCP server|ct-lxc/sharkshell-lxc.sh|
 "
 
 if [[ -t 1 ]]; then

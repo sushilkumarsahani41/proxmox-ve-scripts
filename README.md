@@ -128,6 +128,7 @@ Every script takes `--help`.
 | AdGuard Home | [`adguard-home-lxc.sh`](ct-lxc/adguard-home-lxc.sh) | Network-wide DNS ad blocking. `--channel release\|beta\|edge`. `--os debian\|alpine`. Use `--static` — every client will point at this IP. |
 | Pi-hole | [`pi-hole-lxc.sh`](ct-lxc/pi-hole-lxc.sh) | Network-wide DNS ad blocking. `--upstream cloudflare\|google\|quad9\|opendns`. `--os debian\|alpine`. Sets its own admin web password too (`--webpassword`, separate from the container root password) — auto-generated and shown once, same as root. Use `--static`. |
 | Floci | [`floci-lxc.sh`](ct-lxc/floci-lxc.sh) | Free local AWS/Azure/GCP emulator ([floci-io/floci](https://github.com/floci-io/floci)) + its web console. `--platform aws\|azure\|gcp`. Installs Docker inside the container — see [Floci: Docker-in-LXC](#floci-docker-in-lxc) below before using this one. Debian only, 20GB disk default. |
+| SharkShell | [`sharkshell-lxc.sh`](ct-lxc/sharkshell-lxc.sh) | Self-hosted web SSH client with an encrypted keystore, TOTP 2FA, and a built-in MCP server ([sushilkumarsahani41/SharkShell](https://github.com/sushilkumarsahani41/SharkShell)). No Docker — Node.js, nginx, and PostgreSQL built directly on the container via SharkShell's own `deploy.sh`. Debian only, 6GB disk default. First-run admin setup happens through the web UI, not a flag. |
 
 ### Virtual machines — [`vm/`](vm/)
 
@@ -230,11 +231,37 @@ you haven't used before, it needs internet access from the container on an
 ongoing basis — unlike AdGuard Home or Pi-hole, this isn't "download once,
 run offline."
 
+## SharkShell: a vendor script with real bugs
+
+SharkShell is the one service here where "delegate to the vendor's own
+installer" ran into the vendor's installer not actually working. Deploying
+it for real (not just reading `deploy.sh`) surfaced seven bugs that meant a
+fresh install could not complete on any systemd distro — Debian, Ubuntu,
+Fedora, RHEL, Arch — including one, `systemctl reload-or-start nginx`
+(not a real systemd verb), that killed the deploy outright before the
+service was even installed, and two file-permission bugs (`/etc/sharkshell/env`
+and the generated secrets both `root:root mode 600`, while the backend runs
+as an unprivileged `sharkshell` user) that crash-looped the backend forever
+even past that. Full writeup, and the fix:
+[sushilkumarsahani41/SharkShell#6](https://github.com/sushilkumarsahani41/SharkShell/pull/6).
+
+That fix is merged to `main`, but SharkShell's own release-based one-liner
+(`curl -fsSL https://sharkshell.in/get | sudo bash`) resolves whatever GitHub
+currently calls "latest release" — merging to `main` doesn't reach that path
+until a new release is tagged. `manage.sh` here uses SharkShell's *other*
+documented deploy method instead — `git clone` then `./deploy.sh` — which
+reads `main` directly and sidesteps that entirely. Once a new release ships,
+either path resolves to the same fixed code.
+
+There's no `--webpassword`-style flag for this one: SharkShell creates its
+admin account through a first-visit web setup screen, not a CLI seed. Open
+the URL the summary prints and complete it there.
+
 ## Tested on
 
-`ct-lxc/adguard-home-lxc.sh`, `ct-lxc/pi-hole-lxc.sh`, and `ct-lxc/floci-lxc.sh`
-were verified end-to-end — create, status, update, uninstall, uninstall
---purge, and the failure paths — on:
+`ct-lxc/adguard-home-lxc.sh`, `ct-lxc/pi-hole-lxc.sh`, `ct-lxc/floci-lxc.sh`,
+and `ct-lxc/sharkshell-lxc.sh` were verified end-to-end — create, status,
+update, uninstall, uninstall --purge, and the failure paths — on:
 
 | | |
 |---|---|

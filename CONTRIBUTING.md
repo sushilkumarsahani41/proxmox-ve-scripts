@@ -244,6 +244,35 @@ simply omitted the key, which the generating function didn't originally
 match. Generated YAML deserves the same "run it for real" scrutiny as
 generated shell.
 
+## A vendor's own installer can simply not work (SharkShell)
+
+Every other "delegate to the vendor" service here assumed the vendor's
+installer was the reliable part. SharkShell's `deploy.sh` broke that
+assumption: deploying it for real surfaced seven bugs — a release-asset URL
+that 404s, an invalid systemd verb (`reload-or-start`) that kills the whole
+deploy under `set -e` before the service is even installed, and generated
+secrets/config written `root:root mode 600` while the service runs as an
+unprivileged user, so the backend crash-loops on "Permission denied" even
+past everything else. Full account: [PR #6](https://github.com/sushilkumarsahani41/SharkShell/pull/6).
+
+Two things worth carrying into the next service that leans this heavily on
+a vendor script:
+
+- **"It's a script the maintainer wrote and presumably ran" is not evidence
+  it works.** Reproduce every failure (`journalctl`, the relevant error log,
+  a direct CLI call) before writing a fix, then re-run the *entire* flow
+  from a genuinely clean container afterward — not a shortcut path (a git
+  clone, when the real one-liner never clones) that would dodge the same bug
+  you just fixed.
+- **A merged fix on `main` may not be what the vendor's own one-liner
+  serves.** If their installer resolves source via "latest GitHub release"
+  and no new release has been tagged since the merge, that one-liner still
+  serves the old, broken code. Check whether the project has another
+  documented deploy path that reads `main` directly (here: `git clone` +
+  `./deploy.sh`, an equally official method, not a workaround) and use
+  that one if the timing doesn't line up — don't design this project's
+  script around a vendor path you've just watched serve stale code.
+
 ## House rules
 
 These are the things that make the difference between a script that works on
