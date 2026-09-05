@@ -33,8 +33,9 @@
 #   --static <cidr>        Static IP, e.g. 192.168.1.60/24 (default: dhcp)
 #   --gateway <ip>         Gateway, required with --static
 #   --password <pass>      Root password (default: random, shown once after
-#                           creation). pct enter <ctid> from the host always
-#                           works without one.
+#                           creation) — works for both `ssh root@<ip>` and
+#                           `pct enter <ctid>` (the latter needs no password
+#                           at all)
 #   --platform <name>      Which cloud to emulate: aws (default), azure, or
 #                           gcp. Floci UI supports these three — a 4th
 #                           platform, floci-oci, exists but has no UI support

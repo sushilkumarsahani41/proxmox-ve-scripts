@@ -265,6 +265,37 @@ if [[ -f "$ROOT/ct-lxc/floci-lxc.sh" ]]; then
   fi
 fi
 
+# OpenSSH's own compiled-in default is `PermitRootLogin prohibit-password` —
+# root can never SSH in with a password, no matter how correct it is, unless
+# a container explicitly overrides that. Debian's and Alpine's shipped
+# sshd_config both leave the directive commented out, so the compiled-in
+# default silently applied to every container this project ever created.
+# Confirmed live with sshpass against a real container ("Permission denied"
+# with the exact right password) before writing the fix, and confirmed SSH
+# succeeds after it — on both Debian and Alpine (Alpine needed its own fix
+# on top: the base image doesn't ship OpenSSH installed at all). Can't
+# exercise a real sshd negotiation in this sandbox, so guard structurally:
+# every built script must call enable_root_ssh during create, and lib/pve.sh
+# must still know how to install/start sshd on Alpine specifically.
+# Matches the specific do_create call site, not just any mention of the
+# function name — enable_root_ssh is also called from the update path (to
+# repair containers made before this fix existed), so a bare name search
+# would still pass with the create-time call removed and only that one left.
+if grep -q 'enable_root_ssh "\$CTID" "\$OS_ID"' "$ROOT/src/lib/main.sh" && grep -q "apk add -q openssh" "$ROOT/src/lib/pve.sh"; then
+  pass "lib: enables root SSH login at create time, with an Alpine-specific install step (sshd-password fix)"
+else
+  fail "lib: enables root SSH login at create time, with an Alpine-specific install step (sshd-password fix)"
+fi
+for script_path in ${scripts[@]+"${scripts[@]}"}; do
+  is_shim "$script_path" && continue
+  name="$(basename "$script_path")"
+  if grep -q 'enable_root_ssh "\$CTID" "\$OS_ID"' "$script_path"; then
+    pass "$name calls enable_root_ssh during create (sshd-password fix)"
+  else
+    fail "$name calls enable_root_ssh during create (sshd-password fix)"
+  fi
+done
+
 printf '\nInteractive guard rails\n'
 for script_path in ${scripts[@]+"${scripts[@]}"}; do
   is_shim "$script_path" && continue

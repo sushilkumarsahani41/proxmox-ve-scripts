@@ -141,8 +141,9 @@ summary() {
     echo ""
     svc_summary_lines "$ctid" "$ip"
     echo ""
-    echo " Root login    : pct enter ${ctid}   (from the PVE host, no password needed)"
+    echo " Root SSH      : ssh root@${ip}"
     echo " Root password : ${ROOT_PASSWORD}"
+    echo " Root login    : pct enter ${ctid}   (from the PVE host, no password needed)"
     echo ""
     echo " Update       : ${self} update ${ctid}"
     echo " Status       : ${self} status ${ctid}"
@@ -263,6 +264,7 @@ do_create() {
 
   create_container "$CTID" "$template" "$net_arg"
   wait_for_network "$CTID" "$OS_ID"
+  run_step "enabling root SSH login with the password above" enable_root_ssh "$CTID" "$OS_ID"
   run_step "pushing management script" push_manage_script "$CTID"
 
   info "installing ${SERVICE_NAME}"
@@ -289,11 +291,36 @@ pct_exec_manage() {
   fi
 }
 
+# Best-effort OS detection for a container this script did not just create
+# (so OS_ID isn't already known) — reads /etc/os-release rather than
+# guessing, since a container could have been made before --os existed at
+# all. Falls back to debian, this project's default, if detection is
+# inconclusive; enable_root_ssh degrades gracefully either way (Debian's
+# path is idempotent even if the container was actually Alpine — worst case,
+# a repair on an old container silently no-ops there instead of fixing it).
+detect_os_id() {
+  local ctid="$1" id
+  id="$(pct exec "$ctid" -- sh -c '. /etc/os-release 2>/dev/null; echo "$ID"' 2>/dev/null)"
+  case "$id" in
+    alpine) echo "alpine" ;;
+    *) echo "debian" ;;
+  esac
+}
+
 do_manage() {
   local ctid="$1" action="$2"; shift 2
   require_pve_host
   require_ctid_exists "$ctid"
   push_manage_script "$ctid"
+  if [[ "$action" == "update" ]]; then
+    # Repairs a container made before this existed: root's SSH access was
+    # silently unusable (OpenSSH's own default rejects password auth for
+    # root) until enable_root_ssh started running at create time. Config-only
+    # and idempotent — never touches the account's actual password, so a
+    # container's existing one keeps working, it just starts working over
+    # SSH too.
+    enable_root_ssh "$ctid" "$(detect_os_id "$ctid")" 2>/dev/null || true
+  fi
   pct_exec_manage "$ctid" "$action" "$@"
 }
 

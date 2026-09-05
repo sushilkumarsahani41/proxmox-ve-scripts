@@ -36,8 +36,9 @@
 #   --static <cidr>        Static IP, e.g. 192.168.1.61/24 (default: dhcp)
 #   --gateway <ip>         Gateway, required with --static
 #   --password <pass>      Container root password (default: random, shown
-#                           once after creation). pct enter <ctid> from the
-#                           host always works without one.
+#                           once after creation) — works for both
+#                           `ssh root@<ip>` and `pct enter <ctid>` (the
+#                           latter needs no password at all)
 #
 # There is no --webpassword-style flag here: SharkShell creates its admin
 # account through a first-visit web setup screen, not a CLI seed — open the
@@ -122,8 +123,9 @@ create options:
   --static <cidr>        Static IP, e.g. 192.168.1.61/24 (default: dhcp)
   --gateway <ip>         Gateway, required with --static
   --password <pass>      Container root password (default: random, shown
-                          once after creation). pct enter <ctid> from the
-                          host always works without one.
+                          once after creation) — works for both
+                          `ssh root@<ip>` and `pct enter <ctid>` (the
+                          latter needs no password at all)
 
 There is no --webpassword-style flag here: SharkShell creates its admin
 account through a first-visit web setup screen, not a CLI seed — open the
@@ -612,6 +614,18 @@ os_bootstrap_cmd() {
   esac
 }
 
+# The service name OpenSSH's own package registers under — not the same
+# everywhere. Debian's package (and its systemd unit) is named "ssh", not
+# "sshd"; Alpine's OpenRC init script is "sshd". Getting this wrong doesn't
+# error, it just silently restarts nothing.
+os_sshd_service() {
+  case "$1" in
+    debian) printf 'ssh' ;;
+    alpine) printf 'sshd' ;;
+    *) die "unknown OS '${1}'" ;;
+  esac
+}
+
 template_regex() { printf '^%s_[^_]*_%s\.tar\.(zst|gz|xz)$' "$TEMPLATE_PATTERN" "$1"; }
 
 cached_template_files() {
@@ -717,6 +731,66 @@ wait_for_network() {
     tries=$(( tries - 1 ))
   done
   die "container never came up with working networking/package manager"
+}
+
+# OpenSSH's own compiled-in default is `PermitRootLogin prohibit-password` —
+# root can SSH in with a key, never with a password, no matter how correct
+# it is. Debian's and Alpine's shipped sshd_config both leave that directive
+# commented out (so the compiled-in default applies) rather than setting it
+# explicitly — confirmed by reading a real container's sshd_config, not
+# assumed. The practical effect: the root password this project generates
+# and prints was completely unusable for `ssh root@<ip>` — only `pct enter`/
+# `pct exec` (which never go through sshd at all) worked with it. Reproduced
+# directly with sshpass against a real container ("Permission denied") before
+# writing this fix, and confirmed SSH succeeds after it runs.
+#
+# This is a real security trade-off, not a pure bug fix — root+password
+# becomes reachable from the whole LAN, not just from the PVE host — made
+# deliberately for this project's stated use case (hobby, personal-LAN,
+# tinkering) rather than a public-internet-facing hardening target. The
+# generated password is a random 20 characters, not something guessable.
+#
+# Idempotent: replaces the directive if present (commented or not) rather
+# than assuming it's absent, so re-running this against an already-patched
+# container is harmless.
+enable_root_ssh() {
+  local ctid="$1" os_id="$2" svc cmd
+  svc="$(os_sshd_service "$os_id")"
+
+  # Debian's base template ships OpenSSH server already installed, enabled,
+  # and running. Alpine's does not ship it at all — confirmed directly
+  # (`/etc/ssh` doesn't exist on a fresh container) rather than assumed from
+  # Debian's behaviour transferring over. Installing it here, not folded into
+  # os_bootstrap_cmd, because this step already knows it needs sshd
+  # specifically; a service that never touches SSH shouldn't pay for it.
+  if [[ "$os_id" == "alpine" ]]; then
+    pct exec "$ctid" -- sh -c 'apk info -e openssh >/dev/null 2>&1 || apk add -q openssh' \
+      || die "failed to install openssh on Alpine"
+    pct exec "$ctid" -- rc-update add "$svc" default >/dev/null 2>&1 || true
+  fi
+
+  # Plain basic-regex sed/grep throughout, no -E: Alpine's base image ships
+  # BusyBox's sed, and this project does not assume it understands GNU-style
+  # extended-regex flags. The patterns don't need extended regex anyway.
+  cmd='CFG=/etc/ssh/sshd_config
+for pair in "PermitRootLogin yes" "PasswordAuthentication yes"; do
+  key=${pair%% *}
+  if grep -q "^[#[:space:]]*${key}[[:space:]]" "$CFG" 2>/dev/null; then
+    sed -i "s|^[#[:space:]]*${key}[[:space:]].*|${pair}|" "$CFG"
+  else
+    printf "%s\n" "$pair" >> "$CFG"
+  fi
+done'
+  pct exec "$ctid" -- sh -c "$cmd" || die "failed to update sshd_config for root password login"
+
+  # restart on Debian (already running); Alpine's package installs the
+  # service but does not start it, so start (not just restart) it there.
+  if [[ "$os_id" == "alpine" ]]; then
+    pct exec "$ctid" -- rc-service "$svc" restart 2>/dev/null || pct exec "$ctid" -- rc-service "$svc" start \
+      || die "sshd_config was updated but starting '${svc}' failed"
+  else
+    pct exec "$ctid" -- systemctl restart "$svc" || die "sshd_config was updated but restarting '${svc}' failed"
+  fi
 }
 
 # Pushes the embedded management script into $ctid, always overwriting so the
@@ -1111,8 +1185,9 @@ summary() {
     echo ""
     svc_summary_lines "$ctid" "$ip"
     echo ""
-    echo " Root login    : pct enter ${ctid}   (from the PVE host, no password needed)"
+    echo " Root SSH      : ssh root@${ip}"
     echo " Root password : ${ROOT_PASSWORD}"
+    echo " Root login    : pct enter ${ctid}   (from the PVE host, no password needed)"
     echo ""
     echo " Update       : ${self} update ${ctid}"
     echo " Status       : ${self} status ${ctid}"
@@ -1233,6 +1308,7 @@ do_create() {
 
   create_container "$CTID" "$template" "$net_arg"
   wait_for_network "$CTID" "$OS_ID"
+  run_step "enabling root SSH login with the password above" enable_root_ssh "$CTID" "$OS_ID"
   run_step "pushing management script" push_manage_script "$CTID"
 
   info "installing ${SERVICE_NAME}"
@@ -1259,11 +1335,36 @@ pct_exec_manage() {
   fi
 }
 
+# Best-effort OS detection for a container this script did not just create
+# (so OS_ID isn't already known) — reads /etc/os-release rather than
+# guessing, since a container could have been made before --os existed at
+# all. Falls back to debian, this project's default, if detection is
+# inconclusive; enable_root_ssh degrades gracefully either way (Debian's
+# path is idempotent even if the container was actually Alpine — worst case,
+# a repair on an old container silently no-ops there instead of fixing it).
+detect_os_id() {
+  local ctid="$1" id
+  id="$(pct exec "$ctid" -- sh -c '. /etc/os-release 2>/dev/null; echo "$ID"' 2>/dev/null)"
+  case "$id" in
+    alpine) echo "alpine" ;;
+    *) echo "debian" ;;
+  esac
+}
+
 do_manage() {
   local ctid="$1" action="$2"; shift 2
   require_pve_host
   require_ctid_exists "$ctid"
   push_manage_script "$ctid"
+  if [[ "$action" == "update" ]]; then
+    # Repairs a container made before this existed: root's SSH access was
+    # silently unusable (OpenSSH's own default rejects password auth for
+    # root) until enable_root_ssh started running at create time. Config-only
+    # and idempotent — never touches the account's actual password, so a
+    # container's existing one keeps working, it just starts working over
+    # SSH too.
+    enable_root_ssh "$ctid" "$(detect_os_id "$ctid")" 2>/dev/null || true
+  fi
   pct_exec_manage "$ctid" "$action" "$@"
 }
 

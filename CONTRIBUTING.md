@@ -273,6 +273,39 @@ a vendor script:
   that one if the timing doesn't line up — don't design this project's
   script around a vendor path you've just watched serve stale code.
 
+## A generated credential is only as good as what actually accepts it
+
+The root password every `create` prints (`lib/main.sh`) was silently
+unusable for `ssh root@<ip>` from day one, on every service — correct in
+`/etc/shadow`, confirmed by hash, and still rejected, because OpenSSH's own
+compiled-in default is `PermitRootLogin prohibit-password`. Debian's and
+Alpine's shipped `sshd_config` both leave that directive commented out
+rather than setting it, so the compiled-in default silently applied to every
+container this project ever created. Found from a real report ("ssh shows
+permission denied") — reproduced with `sshpass` against a real container
+before writing anything, the same discipline as everywhere else here.
+
+The general lesson: generating a credential and printing it is not the same
+claim as "this credential works everywhere you'd expect to use it" — a
+password can be entirely correct at the OS level and still be rejected by
+whatever service actually gates access, if that service has its own default
+that silently overrides what the account itself allows. If a future service
+generates a credential for some access path, verify that exact path (not
+just that the account "has" the credential) before shipping it.
+
+The fix itself, `enable_root_ssh` in `lib/pve.sh`, is genuinely OS-aware in
+a way worth reusing as a pattern: Debian ships OpenSSH already installed,
+enabled, and running, so it's just a config patch + restart; Alpine's base
+image does not ship OpenSSH **at all** (`/etc/ssh` doesn't exist on a fresh
+container — checked directly, not assumed from Debian's behavior carrying
+over), so that branch installs it, registers it with OpenRC, and starts
+it before the same config patch applies. Called once at create time
+(`lib/main.sh`'s `do_create`) and defensively from `update` too (via a
+best-effort `/etc/os-release` detection, since a container's `OS_ID` isn't
+known if it was created before `--os` existed at all) — that second call is
+what makes it possible to repair a container that predates this fix without
+touching its actual password or its installed service.
+
 ## House rules
 
 These are the things that make the difference between a script that works on

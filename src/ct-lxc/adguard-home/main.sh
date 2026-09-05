@@ -37,8 +37,9 @@
 #   --static <cidr>        Static IP, e.g. 192.168.1.53/24 (default: dhcp)
 #   --gateway <ip>         Gateway, required with --static
 #   --password <pass>      Root password (default: random, shown once after
-#                           creation). pct enter <ctid> from the host always
-#                           works without one, if you'd rather skip this.
+#                           creation) — works for both `ssh root@<ip>` and
+#                           `pct enter <ctid>` (the latter needs no password
+#                           at all, if you'd rather skip this entirely)
 #   --channel <name>       AdGuard Home channel: release, beta, edge
 #   --template <spec>      Skip template auto-detection entirely, e.g.
 #                           local:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst

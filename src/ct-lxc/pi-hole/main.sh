@@ -43,8 +43,9 @@
 #   --static <cidr>        Static IP, e.g. 192.168.1.53/24 (default: dhcp)
 #   --gateway <ip>         Gateway, required with --static
 #   --password <pass>      Container root password (default: random, shown
-#                           once after creation). pct enter <ctid> from the
-#                           host always works without one.
+#                           once after creation) — works for both
+#                           `ssh root@<ip>` and `pct enter <ctid>` (the
+#                           latter needs no password at all)
 #   --upstream <name>      Upstream DNS: cloudflare (default), google,
 #                           quad9, or opendns
 #   --webpassword <pass>   Pi-hole admin web UI password (default: random,

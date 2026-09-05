@@ -79,9 +79,11 @@ Enter accepting the default and a plan shown before anything is touched:
 ```
 
 A root password is always set — auto-generated and shown once in the closing
-box if you don't provide `--password`, since it's otherwise unset entirely and
-console/SSH password login won't work. `pct enter <ctid>` from the Proxmox host
-always works with no password needed, if you'd rather skip this altogether.
+box if you don't provide `--password` — and `ssh root@<ip>` works with it
+directly (see [Root SSH access](#root-ssh-access) below for why that needs a
+deliberate step, and the trade-off it makes). `pct enter <ctid>` from the
+Proxmox host always works with no password needed, if you'd rather skip
+passwords altogether.
 
 Pass any option at all — or `-y`/`--defaults` — and it skips every question and
 runs straight through, so a scripted or piped invocation never blocks waiting
@@ -162,6 +164,36 @@ Every `create` accepts these:
 `--template` is the escape hatch if detection still picks wrong. Pass a
 template you already have:
 `--template local:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst`
+
+## Root SSH access
+
+`create` also enables `ssh root@<ip>` with the printed root password —
+found necessary from a real bug report: OpenSSH's own compiled-in default,
+`PermitRootLogin prohibit-password`, rejects password auth for root
+regardless of how correct the password is, and Debian's and Alpine's shipped
+`sshd_config` both leave that directive commented out rather than setting it
+explicitly, so the compiled-in default silently applied to every container
+this project ever created. Reproduced live with `sshpass` against a real
+container ("Permission denied" with the exact right password) before writing
+the fix, and confirmed SSH succeeds afterward — on both Debian and Alpine
+(Alpine needed a second fix on top: its base image doesn't ship OpenSSH
+installed at all).
+
+This is a real security trade-off, not a pure bug fix: root becomes
+reachable over SSH with a password from the whole LAN, not just from the
+Proxmox host via `pct enter`. Made deliberately for this project's stated
+use case — hobby, personal-LAN, tinkering — rather than as a public-internet
+hardening target; the generated password is a random 20 characters, not
+something guessable. If you'd rather keep the stricter default, revert it
+yourself post-create: comment `PermitRootLogin`/`PasswordAuthentication`
+back out (or set `PermitRootLogin prohibit-password` explicitly) in
+`/etc/ssh/sshd_config` and restart `ssh` (Alpine: `sshd`).
+
+A container created before this fix existed can be repaired without knowing
+its password or touching its installed service: run this project's `update`
+against it once — the sshd fix runs before the service-specific update logic
+either way, and is config-only, so it never resets whatever password the
+container already has.
 
 ## Multiple guest OSes
 
