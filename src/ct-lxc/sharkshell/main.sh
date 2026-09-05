@@ -86,8 +86,7 @@ DEFAULT_PREFER_STATIC="y"
 # ---------------------------------------------------------------------------
 svc_summary_lines() {
   echo " SharkShell URL: http://${2}"
-  echo " First visit   : complete the Admin Account Setup screen — open"
-  echo "                 registration is disabled immediately afterward"
+  echo " First visit   : complete the Admin Account Setup screen"
 }
 
 pvs_main "$@"

@@ -107,6 +107,26 @@ for script in ${scripts[@]+"${scripts[@]}"}; do
   )"
   [[ "$(echo "$widths" | tr -d ' ')" == "1" ]]
   check $? "$name summary box is aligned"
+
+  # summary()'s "you ran this from a pipe" hint is status text for a human,
+  # like every info/ok/warn message in this project — it must never reach
+  # stdout, only stderr. Found the hard way: it was a bare printf with no
+  # redirect, invisible to the check above because ran_from_file() is true
+  # whenever $0 ends in .sh, which it always does when this suite runs via
+  # `./tests/smoke.sh` — so that check never actually took the pipe branch
+  # locally. Force it here by overriding ran_from_file after sourcing, so
+  # this asserts the real invariant (nothing but the box on stdout) instead
+  # of one that happens to hold under how this suite itself gets invoked.
+  pipe_stdout="$(
+    ( set +u
+      source "$lib" >/dev/null 2>&1
+      ran_from_file() { return 1; }
+      CT_HOSTNAME="test"
+      summary 999 "192.168.1.53" 2>/dev/null
+    ) | sed 's/\x1b\[[0-9;]*m//g' | awk 'NF {print length($0)}' | sort -u | wc -l
+  )"
+  [[ "$(echo "$pipe_stdout" | tr -d ' ')" == "1" ]]
+  check $? "$name summary stays box-only on stdout even when run from a pipe"
 done
 
 # The spinner only runs when stdout is a terminal, so piping a script's output

@@ -1122,10 +1122,16 @@ summary() {
   warn "the root password above is shown once and is not stored anywhere — save it now."
 
   if ! ran_from_file; then
+    # Status text, not the function's return value — like every other
+    # info/ok/warn message in this project, this belongs on stderr. It was a
+    # bare printf with no redirect until a real service's summary box
+    # exposed it: piped to stdout, this text lands right in the middle of
+    # whatever else reads a summary's output (a smoke test measuring box
+    # width, or a caller capturing it), not just on a human's terminal.
     printf "%b[*]%b You ran this from a pipe, so there is no local copy yet. To manage CT %s later:\n" \
-      "$C_INFO" "$C_RESET" "$ctid"
+      "$C_INFO" "$C_RESET" "$ctid" >&2
     printf "    curl -fsSL %s -o %s && chmod +x %s\n" \
-      "$PVS_SCRIPT_URL" "$PVS_SCRIPT_FILENAME" "$PVS_SCRIPT_FILENAME"
+      "$PVS_SCRIPT_URL" "$PVS_SCRIPT_FILENAME" "$PVS_SCRIPT_FILENAME" >&2
   fi
 }
 
@@ -1294,8 +1300,7 @@ pvs_main() {
 # ---------------------------------------------------------------------------
 svc_summary_lines() {
   echo " SharkShell URL: http://${2}"
-  echo " First visit   : complete the Admin Account Setup screen — open"
-  echo "                 registration is disabled immediately afterward"
+  echo " First visit   : complete the Admin Account Setup screen"
 }
 
 pvs_main "$@"
