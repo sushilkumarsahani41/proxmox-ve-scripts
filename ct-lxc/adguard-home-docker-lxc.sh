@@ -617,6 +617,7 @@ resolve_storage() {
 os_label() {
   case "$1" in
     debian) printf 'Debian 13' ;;
+    debian12) printf 'Debian 12' ;;
     alpine) printf 'Alpine 3.24' ;;
     *) printf '%s' "$1" ;;
   esac
@@ -632,6 +633,10 @@ os_label() {
 os_template_pattern() {
   case "$1" in
     debian) printf 'debian-[0-9]+-standard' ;;
+    # Pinned, unlike plain "debian" above — for a service whose vendor
+    # package genuinely only supports one specific Debian major version
+    # (see src/ct-lxc/mongodb/main.sh), not a general-purpose default.
+    debian12) printf 'debian-12-standard' ;;
     alpine) printf 'alpine-[0-9]+\.[0-9]+-default' ;;
     *) die "unknown OS '${1}'" ;;
   esac
@@ -645,7 +650,7 @@ os_template_pattern() {
 # base image has neither bash nor curl, only busybox ash, apk and wget.
 os_bootstrap_cmd() {
   case "$1" in
-    debian) printf '%s' 'command -v curl >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq curl)' ;;
+    debian|debian12) printf '%s' 'command -v curl >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq curl)' ;;
     alpine) printf '%s' 'apk update -q >/dev/null 2>&1; command -v bash >/dev/null 2>&1 || apk add -q bash; command -v curl >/dev/null 2>&1 || apk add -q curl' ;;
     *) die "unknown OS '${1}'" ;;
   esac
@@ -657,7 +662,7 @@ os_bootstrap_cmd() {
 # error, it just silently restarts nothing.
 os_sshd_service() {
   case "$1" in
-    debian) printf 'ssh' ;;
+    debian|debian12) printf 'ssh' ;;
     alpine) printf 'sshd' ;;
     *) die "unknown OS '${1}'" ;;
   esac

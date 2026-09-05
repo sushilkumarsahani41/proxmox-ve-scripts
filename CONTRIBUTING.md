@@ -348,6 +348,81 @@ future Docker-backed service:
   shell-installer-based scripts here do — a native install compiles/downloads
   per-arch; a container image is whatever the vendor chose to publish.
 
+## Four databases, eight scripts: what carried over and what didn't
+
+`postgresql`, `mariadb`, `valkey`, and `mongodb` — each with a `-docker`
+counterpart — are this project's first services that aren't a single
+network-facing daemon with one obvious admin credential. A few things worth
+carrying into the next database-shaped service:
+
+- **The uninstall/purge data-split bug above isn't Docker-specific.** All
+  four *native* scripts shipped with the identical bug, `apt-get remove`/
+  `apt-get purge` shaped instead of `docker compose down`-shaped: a plain
+  `uninstall` left the data directory sitting at its natural path (`apt
+  remove` doesn't touch it) *and* in a fresh backup, so `has_data()` — if it
+  only checks the backup root — never notices the orphan, and a later
+  `--purge` skips right past it once the package itself is gone. Found live,
+  the same way as the Docker version: run `uninstall` then `uninstall
+  --purge` against a real container and check what's actually still on disk,
+  not just what the command claimed. If a future service manages its own
+  data directory outside of Docker at all (a package, a manually-placed
+  binary, anything not torn down by `docker compose down`), check `has_data()`
+  against that directory too, not only the backup root — and make sure the
+  `--purge` branch's cleanup runs unconditionally, not gated behind "does
+  this still look installed."
+- **`dpkg -s <package>` is not "is this installed."** It keeps succeeding
+  after a plain `apt-get remove` — Debian's own package state at that point
+  is `deinstall ok config-files`, which `dpkg -s` reports successfully
+  either way — so `is_installed()` built on it stays true even after the
+  package is gone, and a repeat `--purge` call tries to `apt-get remove` an
+  already-removed package a second time (harmless here, since apt no-ops
+  gracefully, but confusing: a warning fires for nothing actually wrong).
+  Check the package's `Status` field for `install ok installed` explicitly
+  (`dpkg-query -W -f='${Status}'`) if "installed" specifically (not merely
+  "known to dpkg") is what a script's logic depends on.
+- **Opening a database up is the same trade-off as opening up root SSH,
+  made again.** Every one of Debian's own database packages defaults to
+  either localhost-only binding (Postgres, MariaDB, Valkey) or no
+  authentication at all if nothing configures one (MongoDB's official image,
+  specifically) — correct for a package meant to be a building block, wrong
+  for a script whose entire purpose is a database you can point a client at
+  from another machine. This project already made this exact call once (see
+  [Root SSH access](README.md#root-ssh-access) in the README) and reused the
+  same reasoning rather than re-litigating it per service: bind to all
+  interfaces, require the generated password, document it as a LAN-only
+  trade-off, don't silently leave a service unreachable from outside the
+  container just because that's the vendor's own safer default.
+- **A vendor's own client library convention beats inventing one.**
+  MariaDB's local root access defaults to `unix_socket` auth (passwordless,
+  but only from the system's own root account) — setting a network password
+  for `root`@`localhost` replaces that outright, which would have broken
+  this script's own later `mariadb-dump`/health-check calls had it not also
+  written `/root/.my.cnf` (`[client] user=root password=...`, mode 600) the
+  same way Debian's own package does internally for its maintenance account
+  (`/etc/mysql/debian.cnf`) — MariaDB's client tools read it automatically,
+  so nothing else in the script has to know or pass the password explicitly.
+  PostgreSQL needed no equivalent: its Unix-socket `peer` auth for the
+  `postgres` OS user is untouched by whatever password is set for *network*
+  clients, so `su postgres -c psql` keeps working password-free regardless.
+  Check whether a vendor's tools already have a "trusted local access"
+  convention before inventing a project-specific one.
+- **A vendor's apt repository can support one specific OS release and
+  nothing else, permanently, on purpose.** MongoDB's own repo
+  (`repo.mongodb.org`) does not carry a `mongodb-org-server` package for
+  Debian 13 or for arm64 under any Debian release at all — confirmed by
+  fetching the actual `Packages` file per suite/arch, not by reading the
+  install docs, which undersell exactly how narrow this is. A service this
+  constrained needed a way to pin a Debian major version instead of this
+  project's usual "any Debian major version, newest wins" auto-detection
+  (`os_template_pattern` in `lib/pve.sh`) — added as a new OS id (`debian12`,
+  pattern `debian-12-standard`, everything else identical to plain `debian`)
+  rather than bending the general-purpose one, since "any Debian, newest
+  wins" is right for almost everything and wrong here specifically. Refuse
+  early and specifically when a host can't satisfy a hard constraint like
+  this: a `dpkg --print-architecture` check inside `manage.sh` before
+  touching apt at all, naming the Docker-based counterpart as the actual
+  fix rather than leaving someone to decode an apt error.
+
 ## House rules
 
 These are the things that make the difference between a script that works on

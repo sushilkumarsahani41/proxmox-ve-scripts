@@ -133,6 +133,14 @@ Every script takes `--help`.
 | AdGuard Home (Docker) | [`adguard-home-docker-lxc.sh`](ct-lxc/adguard-home-docker-lxc.sh) | Same service, packaged as the official `adguard/adguardhome` image via `docker compose` instead of a native install — pick this one for pull-based updates. No `--channel`/`--os` choice (Debian only, Docker's own installer has no Alpine path). See [Docker-based variants](#docker-based-variants) below. |
 | Pi-hole (Docker) | [`pi-hole-docker-lxc.sh`](ct-lxc/pi-hole-docker-lxc.sh) | Same service, packaged as the official `pihole/pihole` image. `--webpassword`, same semantics as the native version. Debian only. See [Docker-based variants](#docker-based-variants) below. |
 | SharkShell (Docker) | [`sharkshell-docker-lxc.sh`](ct-lxc/sharkshell-docker-lxc.sh) | Same service, packaged as the official `greatsharktech/sharkshell` image instead of building from source. **amd64 only — no arm64 image exists upstream**; on a Raspberry Pi or other arm64 host, use `sharkshell-lxc.sh` instead. Debian only. See [Docker-based variants](#docker-based-variants) below. |
+| PostgreSQL | [`postgresql-lxc.sh`](ct-lxc/postgresql-lxc.sh) | Installed from Debian's own repository (no third-party apt repo needed). `--dbpassword` for the `postgres` role. Opens password auth over the network — see [Databases: open by design](#databases-open-by-design) below. Debian only. |
+| MariaDB | [`mariadb-lxc.sh`](ct-lxc/mariadb-lxc.sh) | Installed from Debian's own repository. `--dbpassword` for the database `root` account (Debian defaults that to passwordless, local-only `unix_socket` auth — this script replaces it). Debian only. |
+| Valkey | [`valkey-lxc.sh`](ct-lxc/valkey-lxc.sh) | The Redis-protocol-compatible store Debian itself now ships (Debian 13 dropped Redis over its 2024 license change). `--dbpassword` sets `requirepass`. Debian only. |
+| MongoDB | [`mongodb-lxc.sh`](ct-lxc/mongodb-lxc.sh) | **Debian 12 + amd64 only** — MongoDB's own apt repository does not publish a server package for any other Debian release or for arm64 at all (checked directly against `repo.mongodb.org`, not assumed from the docs). Refuses cleanly on anything else; use `mongodb-docker-lxc.sh` on arm64. Not verified end-to-end on real hardware — see [Tested on](#tested-on). |
+| PostgreSQL (Docker) | [`postgresql-docker-lxc.sh`](ct-lxc/postgresql-docker-lxc.sh) | The official `postgres` image. `--dbpassword`. Debian only. See [Docker-based variants](#docker-based-variants) below. |
+| MariaDB (Docker) | [`mariadb-docker-lxc.sh`](ct-lxc/mariadb-docker-lxc.sh) | The official `mariadb` image. `--dbpassword`. Debian only. See [Docker-based variants](#docker-based-variants) below. |
+| Valkey (Docker) | [`valkey-docker-lxc.sh`](ct-lxc/valkey-docker-lxc.sh) | The official `valkey/valkey` image. `--dbpassword`. Debian only. See [Docker-based variants](#docker-based-variants) below. |
+| MongoDB (Docker) | [`mongodb-docker-lxc.sh`](ct-lxc/mongodb-docker-lxc.sh) | The official `mongo` image — genuinely multi-arch (amd64 and arm64), unlike the native script above. `--dbpassword`. Debian only. See [Docker-based variants](#docker-based-variants) below. |
 
 ### Virtual machines — [`vm/`](vm/)
 
@@ -293,12 +301,12 @@ the URL the summary prints and complete it there.
 
 ## Docker-based variants
 
-AdGuard Home, Pi-hole, and SharkShell each have a second script, suffixed
-`-docker`, that runs the same service as an official Docker image via
-`docker compose` instead of the native/source install the plain script does.
-Same lifecycle (`create`/`update`/`status`/`uninstall`), same shared root-SSH
-and manage.sh machinery — the only thing that changes is what's installed
-inside the container:
+AdGuard Home, Pi-hole, SharkShell, PostgreSQL, MariaDB, Valkey, and MongoDB
+each have a second script, suffixed `-docker`, that runs the same service as
+an official Docker image via `docker compose` instead of the native/source
+install the plain script does. Same lifecycle (`create`/`update`/`status`/
+`uninstall`), same shared root-SSH and manage.sh machinery — the only thing
+that changes is what's installed inside the container:
 
 | | Native | Docker |
 |---|---|---|
@@ -310,23 +318,63 @@ inside the container:
 Pick whichever fits how you think about the box. Both are maintained; neither
 is the "real" one.
 
-All three Docker variants share the same backup/uninstall shape: `update`
+All seven Docker variants share the same backup/uninstall shape: `update`
 backs up the service's data directory (or directories) before pulling, and
 restores it automatically if the new image doesn't come up healthy; a plain
 `uninstall` backs up before removing, `--purge` removes the backups too. A
 real bug surfaced by testing this on Pi-hole (Docker) — a plain `uninstall`
 backed up the data but also left a copy sitting at its original on-disk
 location, so a later `--purge` (by then, "not installed" so it skipped the
-cleanup branch entirely) never actually deleted it — is fixed in all three:
+cleanup branch entirely) never actually deleted it — is fixed in all seven:
 data now lives in exactly one place after any `uninstall`, never split across
 the live path and the backup.
+
+The four native database scripts (PostgreSQL, MariaDB, Valkey, MongoDB) hit
+the identical bug pattern independently, twice over — found on real
+containers, not by inspection:
+
+- The same "left in two places" split, `apt-get remove`/`apt-get purge`
+  shaped instead of `docker compose down`/data-directory shaped: a plain
+  `uninstall` removed the package but the data directory survived at its
+  natural path *and* a fresh backup, so a later `--purge` (package already
+  gone) skipped the branch that would have removed it. Same fix: the data
+  directory removal in the `--purge` branch no longer depends on the package
+  still looking "installed".
+- `is_installed()` checked `dpkg -s <package>`, which keeps succeeding after
+  a plain `apt-get remove` — Debian tracks that as "deinstall ok
+  config-files", not "gone" — so a second `uninstall --purge` call thought
+  the package was still present and tried to remove it again (harmless, but
+  a confusing warning). Fixed by checking the package's actual `Status`
+  field for `install ok installed` instead.
+
+## Databases: open by design
+
+PostgreSQL, MariaDB, and Valkey (native and Docker alike) all ship, out of
+the box, either bound to `127.0.0.1` only or with no password at all — not
+usable from anywhere but the container itself. Every one of these eight
+scripts changes that: the server binds to all interfaces and a generated
+(or `--dbpassword`-supplied) credential is required to connect, so this is a
+database you can actually point a client at from your LAN, the entire
+reason to run one via a quick-install script. That's the same trade-off
+this project already made for root SSH access (see
+[Root SSH access](#root-ssh-access) above) applied a second time, not a new
+policy: don't expose any of these containers directly to the internet.
+
+MongoDB (Docker) is the one exception with no trade-off to make — the
+official `mongo` image runs with no authentication at all unless both
+`MONGO_INITDB_ROOT_USERNAME` and `MONGO_INITDB_ROOT_PASSWORD` are set at
+first init, so this script simply always sets both.
 
 ## Tested on
 
 `ct-lxc/adguard-home-lxc.sh`, `ct-lxc/pi-hole-lxc.sh`, `ct-lxc/floci-lxc.sh`,
-`ct-lxc/sharkshell-lxc.sh`, `ct-lxc/adguard-home-docker-lxc.sh`, and
-`ct-lxc/pi-hole-docker-lxc.sh` were verified end-to-end — create, status,
-update, uninstall, uninstall --purge, and the failure paths — on:
+`ct-lxc/sharkshell-lxc.sh`, `ct-lxc/adguard-home-docker-lxc.sh`,
+`ct-lxc/pi-hole-docker-lxc.sh`, `ct-lxc/postgresql-lxc.sh`,
+`ct-lxc/postgresql-docker-lxc.sh`, `ct-lxc/mariadb-lxc.sh`,
+`ct-lxc/mariadb-docker-lxc.sh`, `ct-lxc/valkey-lxc.sh`,
+`ct-lxc/valkey-docker-lxc.sh`, and `ct-lxc/mongodb-docker-lxc.sh` were
+verified end-to-end — create, status, update, uninstall, uninstall --purge,
+and the failure paths — on:
 
 | | |
 |---|---|
@@ -359,6 +407,27 @@ to populate the compose file and data directories, then verified a plain
 uninstall backs up and clears them and `--purge` removes the backup, the same
 check run against the other two Docker variants. The install/update/health
 path itself needs an amd64 host to verify for real.
+
+For all seven database scripts, the generated `--dbpassword` was checked
+against a real remote client — not just that the install script exited 0 —
+using a genuinely separate process (a client installed on the Proxmox host
+itself, outside the container) for `psql`, `mariadb`, `valkey-cli`, and
+`mongosh` alike: the right password authenticates, a wrong one is rejected
+(`FATAL: password authentication failed` / `ERROR 1045` / `WRONGPASS` /
+`MongoServerError: Authentication failed`, respectively), and a canary row
+written before `update` is still there and still reachable with the same
+password afterward.
+
+`ct-lxc/mongodb-lxc.sh` could not be verified end-to-end on that same arm64
+host, by design: it refuses to run anywhere but Debian 12 + amd64, and this
+host is arm64. Both of its defenses were still exercised for real rather than
+assumed correct — `create` on its own correctly stopped at template
+resolution (this host's catalog does not even carry a Debian 12 arm64
+template, a real, unforced failure), and forcing a template override to
+reach the actual install step confirmed the in-container arch check
+(`dpkg --print-architecture`) refuses just as cleanly with a message pointing
+at `mongodb-docker-lxc.sh`. The genuine install/update/health path on
+Debian 12 + amd64 still needs a real amd64 host to verify.
 
 ## How this repo is built
 

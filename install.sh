@@ -21,10 +21,18 @@ PVS_CATALOG="
 adguard-home-docker|AdGuard Home (Docker)|AdGuard Home via the official Docker image|ct-lxc/adguard-home-docker-lxc.sh|
 adguard-home|AdGuard Home|Network-wide DNS ad and tracker blocking|ct-lxc/adguard-home-lxc.sh|
 floci|Floci|Free local AWS/Azure/GCP emulator with a web console|ct-lxc/floci-lxc.sh|
+mariadb-docker|MariaDB (Docker)|MariaDB via the official Docker image|ct-lxc/mariadb-docker-lxc.sh|
+mariadb|MariaDB|The community-developed fork of MySQL|ct-lxc/mariadb-lxc.sh|
+mongodb-docker|MongoDB (Docker)|MongoDB via the official Docker image|ct-lxc/mongodb-docker-lxc.sh|
+mongodb|MongoDB|The document database (Debian 12 + amd64 only)|ct-lxc/mongodb-lxc.sh|
 pi-hole-docker|Pi-hole (Docker)|Pi-hole via the official Docker image|ct-lxc/pi-hole-docker-lxc.sh|
 pi-hole|Pi-hole|The original network-wide DNS ad blocker|ct-lxc/pi-hole-lxc.sh|
+postgresql-docker|PostgreSQL (Docker)|PostgreSQL via the official Docker image|ct-lxc/postgresql-docker-lxc.sh|
+postgresql|PostgreSQL|The advanced open-source relational database|ct-lxc/postgresql-lxc.sh|
 sharkshell-docker|SharkShell (Docker)|SharkShell via the official Docker image|ct-lxc/sharkshell-docker-lxc.sh|
 sharkshell|SharkShell|Self-hosted web SSH client with 2FA and an MCP server|ct-lxc/sharkshell-lxc.sh|
+valkey-docker|Valkey (Docker)|Valkey via the official Docker image|ct-lxc/valkey-docker-lxc.sh|
+valkey|Valkey|Redis-protocol-compatible in-memory data store|ct-lxc/valkey-lxc.sh|
 "
 
 if [[ -t 1 ]]; then
