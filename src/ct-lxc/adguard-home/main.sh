@@ -63,7 +63,6 @@ set -Eeuo pipefail
 SERVICE_ID="adguard-home"
 SERVICE_NAME="AdGuard Home"
 # @tagline Network-wide DNS ad and tracker blocking
-# @alias adguardhome
 
 DEFAULT_HOSTNAME="adguard"
 DEFAULT_DISK_GB="2"

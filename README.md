@@ -97,8 +97,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-
   adguard-home -y
 ```
 
-Service names are hyphenated (`adguard-home`). Older joined names
-(`adguardhome`) still resolve, so links handed out before a rename keep working.
+Service names are hyphenated (`adguard-home`, `pi-hole`, etc.).
 
 Each script is also reachable on its own, if you'd rather be explicit:
 
@@ -111,7 +110,7 @@ just a local command instead of a URL:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/adguard-home-lxc.sh -o adguard-home-lxc.sh
-chmod +x adguardhome-lxc.sh
+chmod +x adguard-home-lxc.sh
 
 ./adguard-home-lxc.sh create --static 192.168.1.53/24 --gateway 192.168.1.1
 ./adguard-home-lxc.sh status 101
