@@ -242,6 +242,23 @@ restart_service() {
   fi
 }
 
+# Docker itself, for any service that ships as a container image rather than
+# a native installer. get.docker.com (upstream Docker's own installer) has no
+# Alpine path, so every Docker-based service in this project is Debian-only —
+# same reasoning, and the same install step, first used for Floci. Shared
+# here rather than duplicated per service.
+ensure_docker() {
+  command -v docker >/dev/null 2>&1 && return 0
+  info "installing Docker"
+  local tmp_script
+  tmp_script="$(mktemp)"
+  curl -fsSL https://get.docker.com -o "$tmp_script" || { rm -f "$tmp_script"; die "failed to download Docker's installer"; }
+  sh "$tmp_script" >/dev/null 2>&1 || { rm -f "$tmp_script"; die "Docker installation failed"; }
+  rm -f "$tmp_script"
+  systemctl enable --now docker >/dev/null 2>&1 || true
+  command -v docker >/dev/null 2>&1 || die "Docker installer finished but 'docker' is still not on PATH"
+}
+
 PIHOLE_BIN="/usr/local/bin/pihole"
 BACKUP_ROOT="/var/backups/pihole"
 VENDOR_INSTALL_URL="https://install.pi-hole.net"

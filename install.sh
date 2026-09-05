@@ -18,9 +18,12 @@ PVS_BASE="https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scrip
 
 # id|name|tagline|path|aliases
 PVS_CATALOG="
+adguard-home-docker|AdGuard Home (Docker)|AdGuard Home via the official Docker image|ct-lxc/adguard-home-docker-lxc.sh|adguardhome-docker
 adguard-home|AdGuard Home|Network-wide DNS ad and tracker blocking|ct-lxc/adguard-home-lxc.sh|adguardhome
 floci|Floci|Free local AWS/Azure/GCP emulator with a web console|ct-lxc/floci-lxc.sh|
+pi-hole-docker|Pi-hole (Docker)|Pi-hole via the official Docker image|ct-lxc/pi-hole-docker-lxc.sh|pihole-docker
 pi-hole|Pi-hole|The original network-wide DNS ad blocker|ct-lxc/pi-hole-lxc.sh|pihole
+sharkshell-docker|SharkShell (Docker)|SharkShell via the official Docker image|ct-lxc/sharkshell-docker-lxc.sh|
 sharkshell|SharkShell|Self-hosted web SSH client with 2FA and an MCP server|ct-lxc/sharkshell-lxc.sh|
 "
 

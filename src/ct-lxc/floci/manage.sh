@@ -74,24 +74,8 @@ docker_compose() {
   ( cd "$FLOCI_DIR" && docker compose "$@" )
 }
 
-# Docker itself, not part of the Debian base image any more than curl is —
-# get.docker.com is upstream Docker's own official installer (same one this
-# project's manual verification used), and it brings the compose plugin with
-# it, so there's nothing further to install for `docker compose`. There is
-# no Alpine branch here: get.docker.com does not support it, and this
-# service's DEFAULT_OS_CHOICES (in main.sh) is Debian-only for exactly that
-# reason.
-ensure_docker() {
-  command -v docker >/dev/null 2>&1 && return 0
-  info "installing Docker (this container needs it for Floci's Docker-backed services)"
-  local tmp_script
-  tmp_script="$(mktemp)"
-  curl -fsSL https://get.docker.com -o "$tmp_script" || { rm -f "$tmp_script"; die "failed to download Docker's installer"; }
-  sh "$tmp_script" >/dev/null 2>&1 || { rm -f "$tmp_script"; die "Docker installation failed"; }
-  rm -f "$tmp_script"
-  systemctl enable --now docker >/dev/null 2>&1 || true
-  command -v docker >/dev/null 2>&1 || die "Docker installer finished but 'docker' is still not on PATH"
-}
+# ensure_docker() lives in lib/agent-ui.sh — shared by every Docker-based
+# service in this project, not just this one.
 
 # Writes the compose file fresh every time (install and update both call
 # this), so switching how a platform is wired here takes effect on the next

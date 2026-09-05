@@ -131,6 +131,9 @@ Every script takes `--help`.
 | Pi-hole | [`pi-hole-lxc.sh`](ct-lxc/pi-hole-lxc.sh) | Network-wide DNS ad blocking. `--upstream cloudflare\|google\|quad9\|opendns`. `--os debian\|alpine`. Sets its own admin web password too (`--webpassword`, separate from the container root password) — auto-generated and shown once, same as root. Use `--static`. |
 | Floci | [`floci-lxc.sh`](ct-lxc/floci-lxc.sh) | Free local AWS/Azure/GCP emulator ([floci-io/floci](https://github.com/floci-io/floci)) + its web console. `--platform aws\|azure\|gcp`. Installs Docker inside the container — see [Floci: Docker-in-LXC](#floci-docker-in-lxc) below before using this one. Debian only, 20GB disk default. |
 | SharkShell | [`sharkshell-lxc.sh`](ct-lxc/sharkshell-lxc.sh) | Self-hosted web SSH client with an encrypted keystore, TOTP 2FA, and a built-in MCP server ([sushilkumarsahani41/SharkShell](https://github.com/sushilkumarsahani41/SharkShell)). No Docker — Node.js, nginx, and PostgreSQL built directly on the container via SharkShell's own `deploy.sh`. Debian only, 6GB disk default. First-run admin setup happens through the web UI, not a flag. |
+| AdGuard Home (Docker) | [`adguard-home-docker-lxc.sh`](ct-lxc/adguard-home-docker-lxc.sh) | Same service, packaged as the official `adguard/adguardhome` image via `docker compose` instead of a native install — pick this one for pull-based updates. No `--channel`/`--os` choice (Debian only, Docker's own installer has no Alpine path). See [Docker-based variants](#docker-based-variants) below. |
+| Pi-hole (Docker) | [`pi-hole-docker-lxc.sh`](ct-lxc/pi-hole-docker-lxc.sh) | Same service, packaged as the official `pihole/pihole` image. `--webpassword`, same semantics as the native version. Debian only. See [Docker-based variants](#docker-based-variants) below. |
+| SharkShell (Docker) | [`sharkshell-docker-lxc.sh`](ct-lxc/sharkshell-docker-lxc.sh) | Same service, packaged as the official `greatsharktech/sharkshell` image instead of building from source. **amd64 only — no arm64 image exists upstream**; on a Raspberry Pi or other arm64 host, use `sharkshell-lxc.sh` instead. Debian only. See [Docker-based variants](#docker-based-variants) below. |
 
 ### Virtual machines — [`vm/`](vm/)
 
@@ -289,10 +292,41 @@ There's no `--webpassword`-style flag for this one: SharkShell creates its
 admin account through a first-visit web setup screen, not a CLI seed. Open
 the URL the summary prints and complete it there.
 
+## Docker-based variants
+
+AdGuard Home, Pi-hole, and SharkShell each have a second script, suffixed
+`-docker`, that runs the same service as an official Docker image via
+`docker compose` instead of the native/source install the plain script does.
+Same lifecycle (`create`/`update`/`status`/`uninstall`), same shared root-SSH
+and manage.sh machinery — the only thing that changes is what's installed
+inside the container:
+
+| | Native | Docker |
+|---|---|---|
+| Updates | vendor's own updater/package manager | `docker compose pull && up -d` |
+| Guest OS choice | Debian or Alpine, where the vendor supports both | Debian only — `get.docker.com` has no Alpine path |
+| What's on the container | the service itself | Docker + one running container |
+| Best for | smaller footprint, native OS tooling | pinning/rolling back by image tag, treating the container as disposable |
+
+Pick whichever fits how you think about the box. Both are maintained; neither
+is the "real" one.
+
+All three Docker variants share the same backup/uninstall shape: `update`
+backs up the service's data directory (or directories) before pulling, and
+restores it automatically if the new image doesn't come up healthy; a plain
+`uninstall` backs up before removing, `--purge` removes the backups too. A
+real bug surfaced by testing this on Pi-hole (Docker) — a plain `uninstall`
+backed up the data but also left a copy sitting at its original on-disk
+location, so a later `--purge` (by then, "not installed" so it skipped the
+cleanup branch entirely) never actually deleted it — is fixed in all three:
+data now lives in exactly one place after any `uninstall`, never split across
+the live path and the backup.
+
 ## Tested on
 
 `ct-lxc/adguard-home-lxc.sh`, `ct-lxc/pi-hole-lxc.sh`, `ct-lxc/floci-lxc.sh`,
-and `ct-lxc/sharkshell-lxc.sh` were verified end-to-end — create, status,
+`ct-lxc/sharkshell-lxc.sh`, `ct-lxc/adguard-home-docker-lxc.sh`, and
+`ct-lxc/pi-hole-docker-lxc.sh` were verified end-to-end — create, status,
 update, uninstall, uninstall --purge, and the failure paths — on:
 
 | | |
@@ -316,6 +350,16 @@ live Pi-hole v6 REST API (`POST /api/auth`) — not just that `pihole
 setpassword` exited 0 — confirming both that the right password authenticates
 and a wrong one gets HTTP 401, on both OSes, and that the password survives
 `pihole -up`.
+
+`ct-lxc/sharkshell-docker-lxc.sh` could not be verified end-to-end on that
+same arm64 host: `greatsharktech/sharkshell` has no arm64 image published, so
+`create` correctly fails at `docker compose up` (confirmed against the image's
+own manifest list, not just a guess from the error). Its `uninstall`/`--purge`
+data-handling logic was still exercised directly — installed just far enough
+to populate the compose file and data directories, then verified a plain
+uninstall backs up and clears them and `--purge` removes the backup, the same
+check run against the other two Docker variants. The install/update/health
+path itself needs an amd64 host to verify for real.
 
 ## How this repo is built
 

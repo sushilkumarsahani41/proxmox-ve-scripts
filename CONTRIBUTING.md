@@ -306,6 +306,48 @@ known if it was created before `--os` existed at all) — that second call is
 what makes it possible to repair a container that predates this fix without
 touching its actual password or its installed service.
 
+## A second, Docker-based script for the same service
+
+`adguard-home-docker`, `pi-hole-docker`, and `sharkshell-docker` are the same
+services as their plain counterparts, repackaged around the vendor's official
+Docker image and `docker compose` instead of a native install — a second
+`main.sh`/`manage.sh` pair per service, not a flag on the existing one, since
+the two need different `DEFAULT_*` values (Docker needs `DEFAULT_NESTING`/
+`DEFAULT_KEYCTL`, is Debian-only, and generally wants a plainer `manage.sh`:
+`write_compose_file` + `docker_compose up -d` + a health check, instead of
+whatever the native installer required).
+
+`ensure_docker` (in `lib/agent-ui.sh`, shared with Floci) installs Docker via
+`get.docker.com` if it isn't already there — same Debian-only caveat as
+Floci's own Docker-in-LXC section above.
+
+Two bugs found by testing these for real, both worth checking for in any
+future Docker-backed service:
+
+- **A plain `uninstall` split a service's data across two locations.** The
+  pattern that shipped first — back up, `docker compose down`, remove the
+  live data directory only in the *no-backup* (`--purge`) branch — left the
+  live directory populated even after a successful backup. `has_data()` (used
+  to decide whether `uninstall`/`--purge` has anything to do) checked only the
+  backup root, so once the compose file was gone, `is_installed()` was false
+  and a later `--purge` never reached the branch that would have cleaned up
+  the orphan. Found on Pi-hole (Docker) by actually running `uninstall` then
+  `uninstall --purge` against a live container and checking what was left on
+  disk, not by reading the code. Fixed in all three: `has_data()` checks both
+  the backup root and the live data directories, and a plain `uninstall`
+  unconditionally removes the live directories right after backing them up —
+  data lives in exactly one place after any `uninstall`, never both.
+- **A vendor image is not guaranteed to publish every architecture.**
+  `greatsharktech/sharkshell` is amd64-only — confirmed against the image's
+  own manifest list on Docker Hub, not assumed from the failure — so `create`
+  on an arm64 host (this project's own primary test host) pulls, fails, and
+  leaves Docker installed with nothing running. The script's own vendor
+  shell-installer counterpart doesn't have this problem, since it builds from
+  source. Check an image actually has an arm64 manifest before assuming a
+  Docker-based script gets Proxmox's arm64 support "for free" the way the
+  shell-installer-based scripts here do — a native install compiles/downloads
+  per-arch; a container image is whatever the vendor chose to publish.
+
 ## House rules
 
 These are the things that make the difference between a script that works on
