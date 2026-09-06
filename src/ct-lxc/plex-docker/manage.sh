@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# In-container management for Plex (Docker). Pushed to
+# /usr/local/sbin/plex-docker-manage.sh and re-pushed on every command, so
+# the container always matches the host script's version.
+#
+# Delegates to the official plexinc/pms-docker image and `docker compose`
+# for everything — the same principle as this project's native Plex script,
+# applied to a vendor *image* instead of a vendor *package*. Confirmed
+# multi-arch (amd64, arm64, armv7) directly against Docker Hub rather than
+# assumed — Plex's Docker image used to be amd64-only.
+set -Eeuo pipefail
+
+# @include lib/agent-ui.sh
+
+APP_DIR="/opt/plex-docker"
+COMPOSE_FILE="${APP_DIR}/compose.yaml"
+CONFIG_DIR="${APP_DIR}/config"
+TRANSCODE_DIR="${APP_DIR}/transcode"
+MEDIA_DIR="${APP_DIR}/media"
+BACKUP_ROOT="/var/backups/plex-docker"
+CLAIM_TOKEN=""
+PURGE=0
+
+is_installed() { [[ -f "$COMPOSE_FILE" ]]; }
+# Only CONFIG_DIR — never MEDIA_DIR, which is the user's own media, not
+# Plex's generated state (see cmd_uninstall for why it's never removed).
+has_data() {
+  { [[ -d "$BACKUP_ROOT" ]] && [[ -n "$(ls -A "$BACKUP_ROOT" 2>/dev/null)" ]]; } \
+    || { [[ -d "$CONFIG_DIR" ]] && [[ -n "$(ls -A "$CONFIG_DIR" 2>/dev/null)" ]]; }
+}
+
+docker_compose() { ( cd "$APP_DIR" && docker compose "$@" ); }
+
+# PLEX_CLAIM is included in the environment mapping only when a token was
+# actually given — TZ is always present, so the mapping is never left
+# entirely empty the way an all-conditional one would be (see this
+# project's own Floci write-up in CONTRIBUTING.md for why an empty
+# `environment:` block is invalid YAML to Compose; this isn't that, since
+# TZ always anchors it either way).
+write_compose_file() {
+  mkdir -p "$APP_DIR" "$CONFIG_DIR" "$TRANSCODE_DIR" "$MEDIA_DIR"
+  local claim_line=""
+  if [[ -n "$CLAIM_TOKEN" ]]; then
+    claim_line="      PLEX_CLAIM: ${CLAIM_TOKEN}"
+  fi
+  cat > "$COMPOSE_FILE" <<EOF
+services:
+  plex:
+    image: plexinc/pms-docker:latest
+    restart: unless-stopped
+    ports:
+      - "32400:32400"
+    environment:
+      TZ: UTC
+${claim_line}
+    volumes:
+      - ${CONFIG_DIR}:/config
+      - ${TRANSCODE_DIR}:/transcode
+      - ${MEDIA_DIR}:/data
+EOF
+}
+
+# /identity is Plex's own always-on, unauthenticated status endpoint — works
+# whether or not the server has been claimed yet.
+service_healthy() { curl -fsS -o /dev/null "http://localhost:32400/identity" 2>/dev/null; }
+
+wait_for_service() {
+  local tries=30
+  while (( tries > 0 )); do
+    service_healthy && return 0
+    sleep 2
+    tries=$(( tries - 1 ))
+  done
+  return 1
+}
+
+# CONFIG_DIR only — TRANSCODE_DIR is pure scratch space (not worth backing
+# up, will just repopulate) and MEDIA_DIR is the user's own media, not
+# Plex's data, and could be arbitrarily large besides.
+backup_state() {
+  local backup_dir="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$backup_dir"
+  [[ -d "$CONFIG_DIR" ]] && cp -a "$CONFIG_DIR" "${backup_dir}/config"
+  echo "$backup_dir"
+}
+
+restore_state() {
+  local backup_dir="$1"
+  [[ -d "${backup_dir}/config" ]] || return 0
+  rm -rf "$CONFIG_DIR"
+  cp -a "${backup_dir}/config" "$CONFIG_DIR"
+}
+
+print_access_info() {
+  echo
+  ok "Plex: http://$(container_ip):32400/web"
+}
+
+cmd_install() {
+  require_root
+  ensure_docker
+  is_installed && die "Plex (Docker) is already installed — use 'update' instead"
+
+  write_compose_file
+  docker_compose up -d || die "docker compose up failed — see: docker compose -f ${COMPOSE_FILE} logs"
+
+  if ! wait_for_service; then
+    warn "Plex did not become healthy within the expected time"
+    docker_compose ps >&2 || true
+    die "install did not verify healthy — check: docker compose -f ${COMPOSE_FILE} logs"
+  fi
+
+  ok "Plex (Docker) installed"
+  print_access_info
+}
+
+cmd_update() {
+  require_root
+  is_installed || die "Plex (Docker) is not installed — use 'install' instead"
+
+  local backup_dir
+  backup_dir="$(backup_state)"
+  ok "backed up config to ${backup_dir}"
+
+  if ! docker_compose pull; then
+    warn "docker compose pull failed — leaving the running container untouched"
+    die "update failed, nothing was changed"
+  fi
+
+  if ! docker_compose up -d; then
+    warn "docker compose up failed after pulling the new image — restoring config from backup"
+    restore_state "$backup_dir"
+    die "update failed, config restored from ${backup_dir} — check: docker compose -f ${COMPOSE_FILE} logs"
+  fi
+
+  if ! wait_for_service; then
+    warn "Plex did not come back up healthy after the update — restoring config from backup"
+    restore_state "$backup_dir"
+    docker_compose up -d >/dev/null 2>&1 || true
+    die "update failed, config restored from ${backup_dir} — the image itself is not rolled back by this; check: docker compose -f ${COMPOSE_FILE} logs"
+  fi
+
+  ok "updated"
+  print_access_info
+}
+
+# Never touches MEDIA_DIR, purge or not — that directory holds whatever the
+# user copied or mounted in themselves, not anything Plex generated.
+cmd_uninstall() {
+  require_root
+  if ! is_installed && ! has_data; then
+    die "Plex (Docker) is not installed and there is no backed-up data to remove"
+  fi
+
+  if is_installed; then
+    local backup_dir=""
+    if [[ "$PURGE" -eq 0 ]]; then
+      backup_dir="$(backup_state)"
+    fi
+    docker_compose down >/dev/null 2>&1 || warn "docker compose down reported an issue — continuing"
+    rm -f "$COMPOSE_FILE"
+    rm -rf "$CONFIG_DIR" "$TRANSCODE_DIR"
+    if [[ -n "$backup_dir" ]]; then
+      ok "Plex (Docker) removed, config kept at ${backup_dir} — media at ${MEDIA_DIR} left untouched"
+    else
+      ok "Plex (Docker) removed — media at ${MEDIA_DIR} left untouched"
+    fi
+  elif [[ -d "$CONFIG_DIR" ]]; then
+    rm -rf "$CONFIG_DIR" "$TRANSCODE_DIR"
+  fi
+
+  if [[ "$PURGE" -eq 1 ]]; then
+    rm -rf "$BACKUP_ROOT"
+    ok "all backed-up data removed"
+  fi
+}
+
+cmd_status() {
+  is_installed || die "Plex (Docker) is not installed"
+  echo "service:  $(service_healthy && echo running || echo unhealthy)"
+  echo "address:  http://$(container_ip):32400/web"
+  echo
+  docker_compose ps 2>&1 || true
+}
+
+main() {
+  local cmd="${1:-}"
+  if [[ -n "$cmd" ]]; then shift; fi
+  while (( "$#" )); do
+    case "$1" in
+      --claim) CLAIM_TOKEN="$2"; shift 2 ;;
+      --purge) PURGE=1; shift ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  case "$cmd" in
+    install) cmd_install ;;
+    update) cmd_update ;;
+    uninstall) cmd_uninstall ;;
+    status) cmd_status ;;
+    *) die "unknown command: $cmd" ;;
+  esac
+}
+
+main "$@"

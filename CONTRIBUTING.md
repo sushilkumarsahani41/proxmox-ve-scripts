@@ -455,6 +455,37 @@ directory needs to be structurally excluded, not just "not mentioned" —
 data to clean up," or a real orphan-data check elsewhere in the script (see
 the uninstall/purge pattern above) could accidentally pull it back in.
 
+## A time-limited vendor token doesn't belong in the wizard (Plex)
+
+Plex (native + Docker) reuses Jellyfin's media-directory exclusion outright
+(`/data` in the Docker image, never touched by `uninstall`/`--purge`, same
+proof-by-writing-a-file verification) but adds a genuinely new wrinkle:
+Plex requires a real plex.tv account to finish setup at all — there is no
+local-only admin account the way Jellyfin, AdGuard Home, and SharkShell all
+have. The official Docker image has a first-class shortcut for this,
+`PLEX_CLAIM` (a token from `https://plex.tv/claim`, exposed here as
+`--claim`), but that token is single-use and expires roughly 4 minutes
+after being generated.
+
+That expiry is exactly why `--claim` is a flag and not a `svc_prompt`
+question: this project's interactive wizard asks about container ID,
+hostname, storage, cores, memory, network, and static IP *before* the
+container is even created — easily more than 4 minutes for someone actually
+reading each prompt. A wizard question for the claim token would frequently
+present a token that's already dead by the time `docker compose up` finally
+runs. The flag exists for the one workflow where the timing actually works:
+fetch a token, then immediately run `create --claim <token> -y` (or with
+other flags) right after. Without it, both variants fall back to exactly
+what Jellyfin does — sign in through the web UI after the fact.
+
+The native script has no equivalent flag at all, deliberately: there's no
+officially documented CLI/env mechanism for claiming a natively-installed
+Plex server the way `PLEX_CLAIM` claims a Docker one, and inventing one
+against Plex's private API would violate "never reimplement (or route
+around) upstream's own mechanism." When a vendor's Docker image and native
+package genuinely don't offer the same automation surface, let the two
+scripts' flags actually differ rather than forcing artificial parity.
+
 ## House rules
 
 These are the things that make the difference between a script that works on
@@ -481,6 +512,23 @@ your box and one that works on someone else's.
   the script. Use `i=$(( i + 1 ))`. Same for `(( n-- ))` reaching 0. Inside
   `if (( ... ))` or a loop condition it is fine, because those are condition
   contexts.
+- **A bare `[[ cond ]] && cmd` is only safe if it isn't the last thing a
+  function does.** `set -e` doesn't care about a failing `[[ ]]` buried in the
+  middle of a function body — confirmed directly (`bash -c 'set -Eeuo
+  pipefail; trap ... ERR; f(){ [[ 1 = 2 ]] && echo no; echo yes; }; f'` prints
+  "yes" and never traps) — but if that `[[ ]] && cmd` *is* the function's last
+  statement, a false condition makes the function itself return non-zero,
+  and calling that function as a bare statement (a `svc_plan_lines` or
+  `svc_install_args` hook, say) then trips `set -e` at the call site the
+  moment the condition is normally false — which for an optional flag like
+  `--claim` (see plex-docker below) is most of the time, not an edge case.
+  Every existing conditional hook in this project already dodges this with a
+  full `if/else` (see `postgresql/main.sh`'s `svc_plan_lines`); a hook with
+  only a "true" branch and nothing after it needs an explicit trailing
+  `return 0`, or better, the same `if/else` shape. Found live: plex-docker's
+  first cut of `svc_plan_lines`/`svc_install_args` had exactly this bug,
+  failed on the very first real `create -y` (no `--claim` given, the normal
+  case), fixed before it shipped.
 - **Target bash 5** (what Proxmox ships) but **stay parseable on bash 3.2**
   (what macOS ships), so `tests/smoke.sh` runs locally. Notably: no
   `declare -A`, no `readarray`, and use `${arr[@]+"${arr[@]}"}` when an array

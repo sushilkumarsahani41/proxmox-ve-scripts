@@ -29,6 +29,8 @@ mongodb-docker|MongoDB (Docker)|MongoDB via the official Docker image|ct-lxc/mon
 mongodb|MongoDB|The document database (Debian 12 + amd64 only)|ct-lxc/mongodb-lxc.sh|
 pi-hole-docker|Pi-hole (Docker)|Pi-hole via the official Docker image|ct-lxc/pi-hole-docker-lxc.sh|
 pi-hole|Pi-hole|The original network-wide DNS ad blocker|ct-lxc/pi-hole-lxc.sh|
+plex-docker|Plex (Docker)|Plex via the official Docker image|ct-lxc/plex-docker-lxc.sh|
+plex|Plex|Stream your media library, with optional remote access|ct-lxc/plex-lxc.sh|
 postgresql-docker|PostgreSQL (Docker)|PostgreSQL via the official Docker image|ct-lxc/postgresql-docker-lxc.sh|
 postgresql|PostgreSQL|The advanced open-source relational database|ct-lxc/postgresql-lxc.sh|
 sharkshell-docker|SharkShell (Docker)|SharkShell via the official Docker image|ct-lxc/sharkshell-docker-lxc.sh|

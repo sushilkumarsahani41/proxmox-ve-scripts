@@ -143,6 +143,8 @@ Every script takes `--help`.
 | MongoDB (Docker) | [`mongodb-docker-lxc.sh`](ct-lxc/mongodb-docker-lxc.sh) | The official `mongo` image — genuinely multi-arch (amd64 and arm64), unlike the native script above. `--dbpassword`. Debian only. See [Docker-based variants](#docker-based-variants) below. |
 | Jellyfin | [`jellyfin-lxc.sh`](ct-lxc/jellyfin-lxc.sh) | Free media server, installed via Jellyfin's own official `install-debuntu.sh` (adds their apt repo, works out where it's running). No `--webpassword`-style flag — first-run admin setup happens through the web UI. Debian only, 8GB disk default. |
 | Jellyfin (Docker) | [`jellyfin-docker-lxc.sh`](ct-lxc/jellyfin-docker-lxc.sh) | Same service, the official `jellyfin/jellyfin` image. Media lives at `/opt/jellyfin-docker/media` inside the container — `uninstall`/`--purge` never touch it, only Jellyfin's own config/cache. Debian only. See [Docker-based variants](#docker-based-variants) below. |
+| Plex | [`plex-lxc.sh`](ct-lxc/plex-lxc.sh) | Installed from Plex's own official apt repository. Unlike every other service here, Plex needs a real plex.tv account to finish setup — open the printed URL and sign in there. Debian only, 8GB disk default. |
+| Plex (Docker) | [`plex-docker-lxc.sh`](ct-lxc/plex-docker-lxc.sh) | Same service, the official `plexinc/pms-docker` image. `--claim <token>` (from https://plex.tv/claim, valid ~4 minutes) auto-signs the server in on first boot — not offered in the interactive wizard, since the token would likely expire before the rest of the questions are answered. Media lives at `/opt/plex-docker/media` — never touched by `uninstall`/`--purge`, same as Jellyfin's. Debian only. See [Docker-based variants](#docker-based-variants) below. |
 
 ### Virtual machines — [`vm/`](vm/)
 
@@ -303,13 +305,13 @@ the URL the summary prints and complete it there.
 
 ## Docker-based variants
 
-AdGuard Home, Pi-hole, SharkShell, PostgreSQL, MariaDB, Valkey, MongoDB, and
-Jellyfin each have a second script, suffixed `-docker`, that runs the same
-service as an official Docker image via `docker compose` instead of the
-native/source install the plain script does. Same lifecycle (`create`/
-`update`/`status`/`uninstall`), same shared root-SSH and manage.sh
-machinery — the only thing that changes is what's installed inside the
-container:
+AdGuard Home, Pi-hole, SharkShell, PostgreSQL, MariaDB, Valkey, MongoDB,
+Jellyfin, and Plex each have a second script, suffixed `-docker`, that runs
+the same service as an official Docker image via `docker compose` instead
+of the native/source install the plain script does. Same lifecycle
+(`create`/`update`/`status`/`uninstall`), same shared root-SSH and
+manage.sh machinery — the only thing that changes is what's installed
+inside the container:
 
 | | Native | Docker |
 |---|---|---|
@@ -376,7 +378,8 @@ first init, so this script simply always sets both.
 `ct-lxc/postgresql-docker-lxc.sh`, `ct-lxc/mariadb-lxc.sh`,
 `ct-lxc/mariadb-docker-lxc.sh`, `ct-lxc/valkey-lxc.sh`,
 `ct-lxc/valkey-docker-lxc.sh`, `ct-lxc/mongodb-docker-lxc.sh`,
-`ct-lxc/jellyfin-lxc.sh`, and `ct-lxc/jellyfin-docker-lxc.sh` were verified
+`ct-lxc/jellyfin-lxc.sh`, `ct-lxc/jellyfin-docker-lxc.sh`,
+`ct-lxc/plex-lxc.sh`, and `ct-lxc/plex-docker-lxc.sh` were verified
 end-to-end — create, status, update, uninstall, uninstall --purge, and the
 failure paths — on:
 
@@ -440,6 +443,13 @@ a file was written into `/opt/jellyfin-docker/media` before `uninstall` and
 confirmed still present, byte-for-byte, after `uninstall --purge`, proving
 the "media is never touched" claim rather than just trusting the code that
 makes it.
+
+For Plex (both variants), Plex's own unauthenticated `/identity` endpoint
+was checked directly — a real `<MediaContainer>` response with a genuine
+`machineIdentifier` and the exact version the apt package/image actually
+shipped, not just an HTTP 200 — and the same media-directory proof used for
+Jellyfin was repeated for `/opt/plex-docker/media`: a file written before
+`uninstall`, confirmed unchanged after `uninstall --purge`.
 
 ## How this repo is built
 
