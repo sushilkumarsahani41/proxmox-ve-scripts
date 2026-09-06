@@ -21,6 +21,8 @@ PVS_CATALOG="
 adguard-home-docker|AdGuard Home (Docker)|AdGuard Home via the official Docker image|ct-lxc/adguard-home-docker-lxc.sh|
 adguard-home|AdGuard Home|Network-wide DNS ad and tracker blocking|ct-lxc/adguard-home-lxc.sh|
 floci|Floci|Free local AWS/Azure/GCP emulator with a web console|ct-lxc/floci-lxc.sh|
+jellyfin-docker|Jellyfin (Docker)|Jellyfin via the official Docker image|ct-lxc/jellyfin-docker-lxc.sh|
+jellyfin|Jellyfin|Free media server for movies, TV, and music|ct-lxc/jellyfin-lxc.sh|
 mariadb-docker|MariaDB (Docker)|MariaDB via the official Docker image|ct-lxc/mariadb-docker-lxc.sh|
 mariadb|MariaDB|The community-developed fork of MySQL|ct-lxc/mariadb-lxc.sh|
 mongodb-docker|MongoDB (Docker)|MongoDB via the official Docker image|ct-lxc/mongodb-docker-lxc.sh|

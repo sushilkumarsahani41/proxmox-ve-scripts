@@ -141,6 +141,8 @@ Every script takes `--help`.
 | MariaDB (Docker) | [`mariadb-docker-lxc.sh`](ct-lxc/mariadb-docker-lxc.sh) | The official `mariadb` image. `--dbpassword`. Debian only. See [Docker-based variants](#docker-based-variants) below. |
 | Valkey (Docker) | [`valkey-docker-lxc.sh`](ct-lxc/valkey-docker-lxc.sh) | The official `valkey/valkey` image. `--dbpassword`. Debian only. See [Docker-based variants](#docker-based-variants) below. |
 | MongoDB (Docker) | [`mongodb-docker-lxc.sh`](ct-lxc/mongodb-docker-lxc.sh) | The official `mongo` image — genuinely multi-arch (amd64 and arm64), unlike the native script above. `--dbpassword`. Debian only. See [Docker-based variants](#docker-based-variants) below. |
+| Jellyfin | [`jellyfin-lxc.sh`](ct-lxc/jellyfin-lxc.sh) | Free media server, installed via Jellyfin's own official `install-debuntu.sh` (adds their apt repo, works out where it's running). No `--webpassword`-style flag — first-run admin setup happens through the web UI. Debian only, 8GB disk default. |
+| Jellyfin (Docker) | [`jellyfin-docker-lxc.sh`](ct-lxc/jellyfin-docker-lxc.sh) | Same service, the official `jellyfin/jellyfin` image. Media lives at `/opt/jellyfin-docker/media` inside the container — `uninstall`/`--purge` never touch it, only Jellyfin's own config/cache. Debian only. See [Docker-based variants](#docker-based-variants) below. |
 
 ### Virtual machines — [`vm/`](vm/)
 
@@ -301,12 +303,13 @@ the URL the summary prints and complete it there.
 
 ## Docker-based variants
 
-AdGuard Home, Pi-hole, SharkShell, PostgreSQL, MariaDB, Valkey, and MongoDB
-each have a second script, suffixed `-docker`, that runs the same service as
-an official Docker image via `docker compose` instead of the native/source
-install the plain script does. Same lifecycle (`create`/`update`/`status`/
-`uninstall`), same shared root-SSH and manage.sh machinery — the only thing
-that changes is what's installed inside the container:
+AdGuard Home, Pi-hole, SharkShell, PostgreSQL, MariaDB, Valkey, MongoDB, and
+Jellyfin each have a second script, suffixed `-docker`, that runs the same
+service as an official Docker image via `docker compose` instead of the
+native/source install the plain script does. Same lifecycle (`create`/
+`update`/`status`/`uninstall`), same shared root-SSH and manage.sh
+machinery — the only thing that changes is what's installed inside the
+container:
 
 | | Native | Docker |
 |---|---|---|
@@ -372,9 +375,10 @@ first init, so this script simply always sets both.
 `ct-lxc/pi-hole-docker-lxc.sh`, `ct-lxc/postgresql-lxc.sh`,
 `ct-lxc/postgresql-docker-lxc.sh`, `ct-lxc/mariadb-lxc.sh`,
 `ct-lxc/mariadb-docker-lxc.sh`, `ct-lxc/valkey-lxc.sh`,
-`ct-lxc/valkey-docker-lxc.sh`, and `ct-lxc/mongodb-docker-lxc.sh` were
-verified end-to-end — create, status, update, uninstall, uninstall --purge,
-and the failure paths — on:
+`ct-lxc/valkey-docker-lxc.sh`, `ct-lxc/mongodb-docker-lxc.sh`,
+`ct-lxc/jellyfin-lxc.sh`, and `ct-lxc/jellyfin-docker-lxc.sh` were verified
+end-to-end — create, status, update, uninstall, uninstall --purge, and the
+failure paths — on:
 
 | | |
 |---|---|
@@ -428,6 +432,14 @@ reach the actual install step confirmed the in-container arch check
 (`dpkg --print-architecture`) refuses just as cleanly with a message pointing
 at `mongodb-docker-lxc.sh`. The genuine install/update/health path on
 Debian 12 + amd64 still needs a real amd64 host to verify.
+
+For Jellyfin (both variants), the web UI's own `/health` endpoint was
+checked directly (returns the literal string `Healthy`) rather than just a
+200 on `/`, and — specific to the Docker variant's media-directory design —
+a file was written into `/opt/jellyfin-docker/media` before `uninstall` and
+confirmed still present, byte-for-byte, after `uninstall --purge`, proving
+the "media is never touched" claim rather than just trusting the code that
+makes it.
 
 ## How this repo is built
 

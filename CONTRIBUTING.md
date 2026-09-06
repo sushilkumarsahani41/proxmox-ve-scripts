@@ -423,6 +423,38 @@ carrying into the next database-shaped service:
   touching apt at all, naming the Docker-based counterpart as the actual
   fix rather than leaving someone to decode an apt error.
 
+## When a service's "data" includes something that isn't its data (Jellyfin)
+
+Jellyfin (native + Docker) is the first service here where `--purge`
+couldn't just mean "delete everything under this service's data root."
+jellyfin-docker's compose file bind-mounts three directories:
+`/config` (Jellyfin's own settings and metadata database — genuinely
+Jellyfin's data), `/cache` (transcode scratch space — disposable, not worth
+backing up either), and `/media` — the user's actual video/audio files,
+copied or mounted in by hand, which just happen to live under this
+project's own `/opt/jellyfin-docker/` tree because that's where the compose
+file's other two volumes live too.
+
+Treating all three the same way (back up, remove on `--purge`) would mean
+"reinstall Jellyfin with --purge" quietly deletes someone's media library —
+a wildly disproportionate blast radius for a flag whose contract everywhere
+else in this project is "remove *this service's* generated data." So
+`has_data()`, `backup_state()`, and the `--purge` cleanup in
+`jellyfin-docker/manage.sh` all deliberately touch only `/config` (and skip
+`/cache` as disposable) — `/media` is never read, backed up, or deleted by
+this script under any flag combination, verified for real by writing a file
+into it and confirming it survives `uninstall --purge` byte-for-byte, not
+just by reading the code.
+
+The general lesson: before wiring a directory into a service's backup/purge
+machinery, ask whether anything could end up in it that isn't actually the
+service's own state — a media library, a user-managed upload directory,
+anything the service merely *serves* rather than *generates*. If so, that
+directory needs to be structurally excluded, not just "not mentioned" —
+`has_data()` in particular must not treat it as evidence there's "Jellyfin
+data to clean up," or a real orphan-data check elsewhere in the script (see
+the uninstall/purge pattern above) could accidentally pull it back in.
+
 ## House rules
 
 These are the things that make the difference between a script that works on
