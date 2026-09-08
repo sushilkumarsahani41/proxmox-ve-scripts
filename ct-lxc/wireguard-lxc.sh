@@ -1,141 +1,173 @@
 #!/usr/bin/env bash
 #
-# mariadb-docker-lxc.sh — MariaDB via Docker on Proxmox VE, create to
-# teardown. Run this on a PVE host, as root.
+# wireguard-lxc.sh — WireGuard VPN server on Proxmox VE, create to teardown.
+# Run this on a PVE host, as root.
 #
-# This is the Docker counterpart to ct-lxc/mariadb-lxc.sh, which installs
-# MariaDB natively from Debian's own repository. Same database, different
-# packaging — pick this one for pull-based updates and the official image.
-#
-#   create              Create a Debian LXC with Docker inside it, then run
-#                       the official mariadb image
-#   update <ctid>       mysqldump backup, `docker compose pull && up -d`,
-#                       verify it's back up and answering — restores the
-#                       dump and reports if not
-#   uninstall <ctid>    Back up (unless --purge), `docker compose down`
-#                       (--purge also removes the data and backups)
-#   status <ctid>       Show container status and readiness
+#   create              Create a Debian LXC, install wireguard-tools from
+#                       Debian's own repository, and bring up a working
+#                       server with one client already configured
+#   update <ctid>       Back up /etc/wireguard, apt upgrade, verify the
+#                       interface is still up — restores the backup and
+#                       reports if not
+#   uninstall <ctid>    Remove WireGuard (apt remove, keys/client configs
+#                       kept on disk). --purge also drops them and backups
+#   status <ctid>       Show the interface and connected peers (`wg show`)
 #
 # Usage:
-#   ./mariadb-docker-lxc.sh create [options]
-#   ./mariadb-docker-lxc.sh update <ctid>
-#   ./mariadb-docker-lxc.sh uninstall <ctid> [--purge]
-#   ./mariadb-docker-lxc.sh status <ctid>
+#   ./wireguard-lxc.sh create [options]
+#   ./wireguard-lxc.sh update <ctid>
+#   ./wireguard-lxc.sh uninstall <ctid> [--purge]
+#   ./wireguard-lxc.sh status <ctid>
 #
 # create options:
 #   -y, --defaults         Skip the questions and use the recommended values
 #   -i, --id <id>          Container ID (default: next free ID)
-#   -n, --hostname <name>  Container hostname (default: mariadb-docker)
+#   -n, --hostname <name>  Container hostname (default: wireguard)
 #   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
 #   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
 #   -b, --bridge <name>    Network bridge (default: vmbr0)
-#   -d, --disk <GB>        Disk size in GB (default: 4)
+#   -d, --disk <GB>        Disk size in GB (default: 2)
 #   -c, --cores <n>        CPU cores (default: 1)
-#   -m, --memory <MB>      RAM in MB (default: 1024)
-#   --static <cidr>        Static IP, e.g. 192.168.1.55/24 (default: dhcp)
+#   -m, --memory <MB>      RAM in MB (default: 512)
+#   --static <cidr>        Static IP, e.g. 192.168.1.61/24 (default: dhcp)
 #   --gateway <ip>         Gateway, required with --static
 #   --password <pass>      Container root password (default: random, shown
 #                           once after creation)
-#   --dbpassword <pass>    Password for the database `root` account (default:
-#                           random, shown once after creation, min 8
-#                           characters)
 #
-# Same network trade-off as the native script: the container publishes 3306
-# on all interfaces, reachable from your LAN with the printed password.
+# Adding, removing, or listing clients beyond the first one this creates is
+# not a create-time flag — it's an ongoing thing you'll do over the life of
+# the server, so it's a command on the container itself, not this script
+# (pct exec needs the full path — it doesn't search /usr/local/sbin the way
+# a login shell would):
+#   pct exec <ctid> -- /usr/local/sbin/wireguard-manage.sh add-client <name>
+#   pct exec <ctid> -- /usr/local/sbin/wireguard-manage.sh remove-client <name>
+#   pct exec <ctid> -- /usr/local/sbin/wireguard-manage.sh list-clients
+#   pct exec <ctid> -- /usr/local/sbin/wireguard-manage.sh show-client <name>
+#                       (prints the client's .conf and a scannable QR code)
 #
-# Debian only, no --os choice: get.docker.com (Docker's own installer) has no
-# Alpine path. This needs internet access from the container to pull the
-# image, and again on every `update`.
+# Run with no options on a terminal and it asks about each setting, showing
+# the recommended value in brackets — Enter accepts it. Pass any option (or
+# -y) and it runs straight through without asking, so scripts stay
+# predictable.
+#
+# This is a VPN endpoint, so it wants a fixed address for the same reason
+# AdGuard Home and Pi-hole do — static IP (or a port-forward to it) is how
+# clients out on the internet actually reach it.
+#
+# Needs a `tun`-capable container: unprivileged LXCs have no access to
+# /dev/net/tun by default, and this project has no --features flag for it —
+# handled automatically (see CONTRIBUTING.md's write-up on enable_tun_device
+# in lib/pve.sh if you're curious what that actually does to the container).
+#
+# Debian only — this delegates to Debian's own wireguard-tools package, not
+# a third-party repo.
 #
 # ---------------------------------------------------------------------------
 # GENERATED FILE - DO NOT EDIT.
-# Built by build.sh from src/ct-lxc/mariadb-docker/main.sh and src/lib/*.sh.
+# Built by build.sh from src/ct-lxc/wireguard/main.sh and src/lib/*.sh.
 # Edit the source, then run ./build.sh. See CONTRIBUTING.md.
 # ---------------------------------------------------------------------------
 
-PVS_SCRIPT_FILENAME="mariadb-docker-lxc.sh"
-PVS_SCRIPT_URL="https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/mariadb-docker-lxc.sh"
+PVS_SCRIPT_FILENAME="wireguard-lxc.sh"
+PVS_SCRIPT_URL="https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/wireguard-lxc.sh"
 
 set -Eeuo pipefail
 
 # ---------------------------------------------------------------------------
 # Service definition
 # ---------------------------------------------------------------------------
-SERVICE_ID="mariadb-docker"
-SERVICE_NAME="MariaDB (Docker)"
-# @tagline MariaDB via the official Docker image
+SERVICE_ID="wireguard"
+SERVICE_NAME="WireGuard"
+# @tagline Fast, modern VPN tunnel
 
-DEFAULT_HOSTNAME="mariadb-docker"
-DEFAULT_DISK_GB="4"
+DEFAULT_HOSTNAME="wireguard"
+DEFAULT_DISK_GB="2"
 DEFAULT_CORES="1"
-DEFAULT_MEMORY_MB="1024"
+DEFAULT_MEMORY_MB="512"
 DEFAULT_PREFER_STATIC="y"
-DEFAULT_NESTING="1"
-DEFAULT_KEYCTL="1"
-
-DBPASSWORD=""
+DEFAULT_NEEDS_TUN="1"
 
 pvs_usage_text() {
 cat <<'EOF_PVS_USAGE'
 
-mariadb-docker-lxc.sh — MariaDB via Docker on Proxmox VE, create to
-teardown. Run this on a PVE host, as root.
+wireguard-lxc.sh — WireGuard VPN server on Proxmox VE, create to teardown.
+Run this on a PVE host, as root.
 
-This is the Docker counterpart to ct-lxc/mariadb-lxc.sh, which installs
-MariaDB natively from Debian's own repository. Same database, different
-packaging — pick this one for pull-based updates and the official image.
-
-  create              Create a Debian LXC with Docker inside it, then run
-                      the official mariadb image
-  update <ctid>       mysqldump backup, `docker compose pull && up -d`,
-                      verify it's back up and answering — restores the
-                      dump and reports if not
-  uninstall <ctid>    Back up (unless --purge), `docker compose down`
-                      (--purge also removes the data and backups)
-  status <ctid>       Show container status and readiness
+  create              Create a Debian LXC, install wireguard-tools from
+                      Debian's own repository, and bring up a working
+                      server with one client already configured
+  update <ctid>       Back up /etc/wireguard, apt upgrade, verify the
+                      interface is still up — restores the backup and
+                      reports if not
+  uninstall <ctid>    Remove WireGuard (apt remove, keys/client configs
+                      kept on disk). --purge also drops them and backups
+  status <ctid>       Show the interface and connected peers (`wg show`)
 
 Usage:
-  ./mariadb-docker-lxc.sh create [options]
-  ./mariadb-docker-lxc.sh update <ctid>
-  ./mariadb-docker-lxc.sh uninstall <ctid> [--purge]
-  ./mariadb-docker-lxc.sh status <ctid>
+  ./wireguard-lxc.sh create [options]
+  ./wireguard-lxc.sh update <ctid>
+  ./wireguard-lxc.sh uninstall <ctid> [--purge]
+  ./wireguard-lxc.sh status <ctid>
 
 create options:
   -y, --defaults         Skip the questions and use the recommended values
   -i, --id <id>          Container ID (default: next free ID)
-  -n, --hostname <name>  Container hostname (default: mariadb-docker)
+  -n, --hostname <name>  Container hostname (default: wireguard)
   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
   -b, --bridge <name>    Network bridge (default: vmbr0)
-  -d, --disk <GB>        Disk size in GB (default: 4)
+  -d, --disk <GB>        Disk size in GB (default: 2)
   -c, --cores <n>        CPU cores (default: 1)
-  -m, --memory <MB>      RAM in MB (default: 1024)
-  --static <cidr>        Static IP, e.g. 192.168.1.55/24 (default: dhcp)
+  -m, --memory <MB>      RAM in MB (default: 512)
+  --static <cidr>        Static IP, e.g. 192.168.1.61/24 (default: dhcp)
   --gateway <ip>         Gateway, required with --static
   --password <pass>      Container root password (default: random, shown
                           once after creation)
-  --dbpassword <pass>    Password for the database `root` account (default:
-                          random, shown once after creation, min 8
-                          characters)
 
-Same network trade-off as the native script: the container publishes 3306
-on all interfaces, reachable from your LAN with the printed password.
+Adding, removing, or listing clients beyond the first one this creates is
+not a create-time flag — it's an ongoing thing you'll do over the life of
+the server, so it's a command on the container itself, not this script
+(pct exec needs the full path — it doesn't search /usr/local/sbin the way
+a login shell would):
+  pct exec <ctid> -- /usr/local/sbin/wireguard-manage.sh add-client <name>
+  pct exec <ctid> -- /usr/local/sbin/wireguard-manage.sh remove-client <name>
+  pct exec <ctid> -- /usr/local/sbin/wireguard-manage.sh list-clients
+  pct exec <ctid> -- /usr/local/sbin/wireguard-manage.sh show-client <name>
+                      (prints the client's .conf and a scannable QR code)
 
-Debian only, no --os choice: get.docker.com (Docker's own installer) has no
-Alpine path. This needs internet access from the container to pull the
-image, and again on every `update`.
+Run with no options on a terminal and it asks about each setting, showing
+the recommended value in brackets — Enter accepts it. Pass any option (or
+-y) and it runs straight through without asking, so scripts stay
+predictable.
+
+This is a VPN endpoint, so it wants a fixed address for the same reason
+AdGuard Home and Pi-hole do — static IP (or a port-forward to it) is how
+clients out on the internet actually reach it.
+
+Needs a `tun`-capable container: unprivileged LXCs have no access to
+/dev/net/tun by default, and this project has no --features flag for it —
+handled automatically (see CONTRIBUTING.md's write-up on enable_tun_device
+in lib/pve.sh if you're curious what that actually does to the container).
+
+Debian only — this delegates to Debian's own wireguard-tools package, not
+a third-party repo.
 EOF_PVS_USAGE
 }
 manage_script() {
 cat <<'EOF_MANAGE_SCRIPT'
 #!/usr/bin/env bash
-# In-container management for MariaDB (Docker). Pushed to
-# /usr/local/sbin/mariadb-docker-manage.sh and re-pushed on every command, so
-# the container always matches the host script's version.
+# In-container management for WireGuard. Pushed to
+# /usr/local/sbin/wireguard-manage.sh and re-pushed on every command, so the
+# container always matches the host script's version.
 #
-# Delegates to the official mariadb image and `docker compose` for
-# everything — the same principle as this project's native MariaDB script,
-# applied to a vendor *image* instead of a vendor *package*.
+# Delegates to Debian's own wireguard-tools package for the protocol itself;
+# everything else here (the wg0.conf this writes, NAT/forwarding rules, the
+# client-management commands) is this project's own, since a "WireGuard
+# server" isn't a single vendor-run daemon with its own config format the
+# way every other service here is — wg-quick is a thin wrapper around the
+# kernel's own WireGuard implementation, and the server/client config shape
+# is just what wg-quick expects, not something a vendor installer sets up
+# for you.
 set -Eeuo pipefail
 
 # lib/agent-ui.sh — the small preamble every in-container management script
@@ -222,110 +254,232 @@ ensure_docker() {
   command -v docker >/dev/null 2>&1 || die "Docker installer finished but 'docker' is still not on PATH"
 }
 
-APP_DIR="/opt/mariadb-docker"
-COMPOSE_FILE="${APP_DIR}/compose.yaml"
-DATA_DIR="${APP_DIR}/data"
-BACKUP_ROOT="/var/backups/mariadb-docker"
-DBPASSWORD=""
+WG_DIR="/etc/wireguard"
+CONF="${WG_DIR}/wg0.conf"
+CLIENTS_DIR="${WG_DIR}/clients"
+BACKUP_ROOT="/var/backups/wireguard-lxc"
+VPN_PORT="51820"
+VPN_SUBNET="10.66.66"
 PURGE=0
 
-is_installed() { [[ -f "$COMPOSE_FILE" ]]; }
+is_installed() { dpkg-query -W -f='${Status}' wireguard-tools 2>/dev/null | grep -q '^install ok installed'; }
 has_data() {
   { [[ -d "$BACKUP_ROOT" ]] && [[ -n "$(ls -A "$BACKUP_ROOT" 2>/dev/null)" ]]; } \
-    || { [[ -d "$DATA_DIR" ]] && [[ -n "$(ls -A "$DATA_DIR" 2>/dev/null)" ]]; }
+    || { [[ -d "$WG_DIR" ]] && [[ -n "$(ls -A "$WG_DIR" 2>/dev/null)" ]]; }
 }
 
-docker_compose() { ( cd "$APP_DIR" && docker compose "$@" ); }
+wan_iface() { ip route show default 2>/dev/null | awk '{print $5; exit}'; }
 
-write_compose_file() {
-  mkdir -p "$APP_DIR" "$DATA_DIR"
-  cat > "$COMPOSE_FILE" <<EOF
-services:
-  mariadb:
-    image: mariadb:11
-    restart: unless-stopped
-    ports:
-      - "3306:3306"
-    environment:
-      MARIADB_ROOT_PASSWORD: ${DBPASSWORD}
-    volumes:
-      - ${DATA_DIR}:/var/lib/mysql
-EOF
-}
-
-service_healthy() { docker_compose exec -T mariadb mariadb-admin ping -uroot -p"${DBPASSWORD}" >/dev/null 2>&1; }
+service_healthy() { wg show wg0 >/dev/null 2>&1; }
 
 wait_for_service() {
-  local tries=30
+  local tries=15
   while (( tries > 0 )); do
     service_healthy && return 0
-    sleep 2
+    sleep 1
     tries=$(( tries - 1 ))
   done
   return 1
 }
 
+# The next free client address in ${VPN_SUBNET}.0/24 — .1 is the server
+# itself, so clients start at .2. Counts existing client configs rather than
+# keeping a separate counter file, so it stays correct even if one was
+# removed by hand.
+next_client_ip() {
+  local n=2
+  while [[ -f "${CLIENTS_DIR}/.ip-${n}" ]]; do
+    n=$(( n + 1 ))
+  done
+  echo "$n"
+}
+
+# Adds a peer to the running interface without dropping existing
+# connections (`wg syncconf`, the documented safe way to apply a config
+# change to a live wg-quick interface — a full `wg-quick down/up` would
+# briefly drop every already-connected client, not just the new one).
+sync_wg0() {
+  wg syncconf wg0 <(wg-quick strip wg0)
+}
+
+add_client() {
+  local name="$1"
+  [[ -n "$name" ]] || die "add-client needs a name, e.g.: add-client phone"
+  [[ -f "${CLIENTS_DIR}/${name}.conf" ]] && die "a client named '${name}' already exists"
+
+  local ip; ip="$(next_client_ip)"
+  local priv pub psk server_pub endpoint
+  priv="$(wg genkey)"
+  pub="$(printf '%s' "$priv" | wg pubkey)"
+  psk="$(wg genpsk)"
+  server_pub="$(printf '%s' "$(sed -n 's/^PrivateKey = //p' "$CONF" | head -n1)" | wg pubkey)"
+  endpoint="$(container_ip):${VPN_PORT}"
+
+  {
+    echo ""
+    echo "[Peer]"
+    echo "# ${name}"
+    echo "PublicKey = ${pub}"
+    echo "PresharedKey = ${psk}"
+    echo "AllowedIPs = ${VPN_SUBNET}.${ip}/32"
+  } >> "$CONF"
+
+  mkdir -p "$CLIENTS_DIR"
+  : > "${CLIENTS_DIR}/.ip-${ip}"
+  cat > "${CLIENTS_DIR}/${name}.conf" <<EOF
+[Interface]
+PrivateKey = ${priv}
+Address = ${VPN_SUBNET}.${ip}/24
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = ${server_pub}
+PresharedKey = ${psk}
+Endpoint = ${endpoint}
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25
+EOF
+  chmod 600 "${CLIENTS_DIR}/${name}.conf"
+
+  if service_healthy; then
+    sync_wg0 || warn "peer added to ${CONF} but syncing the live interface failed — a restart of wg-quick@wg0 will pick it up"
+  fi
+
+  ok "client '${name}' added (${VPN_SUBNET}.${ip})"
+}
+
+remove_client() {
+  local name="$1"
+  [[ -n "$name" ]] || die "remove-client needs a name"
+  [[ -f "${CLIENTS_DIR}/${name}.conf" ]] || die "no client named '${name}'"
+
+  # Each [Peer] block is its own blank-line-separated paragraph, tagged with
+  # a `# <name>` comment line added by add_client — paragraph mode (RS="")
+  # plus an exact per-line match (not a plain substring search, which would
+  # also match "peer10" while looking for "peer1") finds the one block that
+  # is this client's and drops it, leaving [Interface] and every other
+  # [Peer] block untouched.
+  awk -v marker="# ${name}" '
+    BEGIN { RS=""; ORS="\n\n" }
+    {
+      found = 0
+      n = split($0, lines, "\n")
+      for (i = 1; i <= n; i++) { if (lines[i] == marker) { found = 1; break } }
+      if (!found) print
+    }
+  ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
+
+  local ip_marker
+  ip_marker="$(sed -n 's/^Address = '"${VPN_SUBNET}"'\.\([0-9]*\)\/.*/\1/p' "${CLIENTS_DIR}/${name}.conf" | head -n1)"
+  rm -f "${CLIENTS_DIR}/${name}.conf" "${CLIENTS_DIR}/.ip-${ip_marker}"
+
+  if service_healthy; then
+    sync_wg0 || warn "peer removed from ${CONF} but syncing the live interface failed — a restart of wg-quick@wg0 will pick it up"
+  fi
+
+  ok "client '${name}' removed"
+}
+
+list_clients() {
+  [[ -d "$CLIENTS_DIR" ]] || { echo "no clients yet"; return 0; }
+  local f base
+  for f in "${CLIENTS_DIR}"/*.conf; do
+    [[ -e "$f" ]] || { echo "no clients yet"; return 0; }
+    base="$(basename "$f" .conf)"
+    echo "$base"
+  done
+}
+
+show_client() {
+  local name="$1"
+  [[ -n "$name" ]] || die "show-client needs a name"
+  [[ -f "${CLIENTS_DIR}/${name}.conf" ]] || die "no client named '${name}'"
+  echo "--- ${name}.conf ---"
+  cat "${CLIENTS_DIR}/${name}.conf"
+  if command -v qrencode >/dev/null 2>&1; then
+    echo
+    echo "--- scan with the WireGuard app ---"
+    qrencode -t ansiutf8 < "${CLIENTS_DIR}/${name}.conf"
+  fi
+}
+
 backup_state() {
   local backup_dir="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$backup_dir"
-  docker_compose exec -T mariadb mariadb-dump -uroot -p"${DBPASSWORD}" --all-databases \
-    > "${backup_dir}/dump.sql" 2>/dev/null || true
+  [[ -d "$WG_DIR" ]] && cp -a "$WG_DIR" "${backup_dir}/wireguard"
   echo "$backup_dir"
 }
 
 restore_state() {
   local backup_dir="$1"
-  [[ -f "${backup_dir}/dump.sql" ]] || return 0
-  docker_compose exec -T mariadb mariadb -uroot -p"${DBPASSWORD}" < "${backup_dir}/dump.sql" >/dev/null 2>&1 || true
+  [[ -d "${backup_dir}/wireguard" ]] || return 0
+  rm -rf "$WG_DIR"
+  cp -a "${backup_dir}/wireguard" "$WG_DIR"
 }
 
 print_access_info() {
   echo
-  ok "MariaDB: mariadb -h $(container_ip) -u root -p"
+  ok "WireGuard: $(container_ip):${VPN_PORT} (UDP)"
+  ok "First client config: pct exec <ctid> -- /usr/local/sbin/wireguard-manage.sh show-client peer1"
 }
 
 cmd_install() {
   require_root
-  ensure_docker
-  is_installed && die "MariaDB (Docker) is already installed — use 'update' instead"
+  is_installed && die "WireGuard is already installed — use 'update' instead"
 
-  write_compose_file
-  docker_compose up -d || die "docker compose up failed — see: docker compose -f ${COMPOSE_FILE} logs"
+  ensure_pkg wireguard-tools qrencode iptables
 
-  if ! wait_for_service; then
-    warn "MariaDB did not become healthy within the expected time"
-    docker_compose ps >&2 || true
-    die "install did not verify healthy — check: docker compose -f ${COMPOSE_FILE} logs"
-  fi
+  local iface; iface="$(wan_iface)"
+  [[ -n "$iface" ]] || die "couldn't determine the default network interface — check: ip route show default"
 
-  ok "MariaDB (Docker) installed"
+  mkdir -p "$WG_DIR" "$CLIENTS_DIR"
+  chmod 700 "$WG_DIR"
+
+  local server_priv; server_priv="$(wg genkey)"
+  cat > "$CONF" <<EOF
+[Interface]
+Address = ${VPN_SUBNET}.1/24
+ListenPort = ${VPN_PORT}
+PrivateKey = ${server_priv}
+PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o ${iface} -j MASQUERADE
+PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o ${iface} -j MASQUERADE
+EOF
+  chmod 600 "$CONF"
+
+  echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-wireguard.conf
+  sysctl -p /etc/sysctl.d/99-wireguard.conf >/dev/null 2>&1 || true
+
+  systemctl enable --now wg-quick@wg0 >/dev/null 2>&1 \
+    || die "wg-quick@wg0 failed to start — check: journalctl -u wg-quick@wg0"
+
+  wait_for_service || die "WireGuard interface did not come up — check: journalctl -u wg-quick@wg0"
+
+  add_client peer1
+
+  ok "WireGuard installed"
   print_access_info
 }
 
 cmd_update() {
   require_root
-  is_installed || die "MariaDB (Docker) is not installed — use 'install' instead"
+  is_installed || die "WireGuard is not installed — use 'install' instead"
 
   local backup_dir
   backup_dir="$(backup_state)"
-  ok "backed up all databases to ${backup_dir}/dump.sql"
+  ok "backed up keys and client configs to ${backup_dir}"
 
-  if ! docker_compose pull; then
-    warn "docker compose pull failed — leaving the running container untouched"
-    die "update failed, nothing was changed"
+  apt-get update -qq
+  if ! apt-get install -y -qq --only-upgrade wireguard-tools >/dev/null 2>&1; then
+    warn "apt upgrade reported an issue — continuing to verify the running interface"
   fi
 
-  if ! docker_compose up -d; then
-    warn "docker compose up failed after pulling the new image — restoring data from backup"
-    restore_state "$backup_dir"
-    die "update failed, data restored from ${backup_dir}/dump.sql — check: docker compose -f ${COMPOSE_FILE} logs"
-  fi
+  systemctl restart wg-quick@wg0 2>/dev/null || true
 
   if ! wait_for_service; then
-    warn "MariaDB did not come back up healthy after the update — restoring data from backup"
+    warn "WireGuard did not come back up after the update — restoring from backup"
     restore_state "$backup_dir"
-    docker_compose up -d >/dev/null 2>&1 || true
-    die "update failed, data restored from ${backup_dir}/dump.sql — the image itself is not rolled back by this; check: docker compose -f ${COMPOSE_FILE} logs"
+    systemctl restart wg-quick@wg0 2>/dev/null || true
+    die "update failed, data restored from ${backup_dir} — check: journalctl -u wg-quick@wg0"
   fi
 
   ok "updated"
@@ -335,58 +489,66 @@ cmd_update() {
 cmd_uninstall() {
   require_root
   if ! is_installed && ! has_data; then
-    die "MariaDB (Docker) is not installed and there is no backed-up data to remove"
+    die "WireGuard is not installed and there is no backed-up data to remove"
   fi
 
+  local backup_dir=""
   if is_installed; then
-    local backup_dir=""
     if [[ "$PURGE" -eq 0 ]]; then
       backup_dir="$(backup_state)"
     fi
-    docker_compose down >/dev/null 2>&1 || warn "docker compose down reported an issue — continuing"
-    rm -f "$COMPOSE_FILE"
-    rm -rf "$DATA_DIR"
-    if [[ -n "$backup_dir" ]]; then
-      ok "MariaDB (Docker) removed, data kept at ${backup_dir}"
-    else
-      ok "MariaDB (Docker) removed"
-    fi
-  elif [[ -d "$DATA_DIR" ]]; then
-    rm -rf "$DATA_DIR"
+    systemctl disable --now wg-quick@wg0 >/dev/null 2>&1 || true
+    apt-get remove -y -qq 'wireguard-tools*' >/dev/null 2>&1 || warn "apt remove reported an issue — continuing"
   fi
 
+  # Not gated on is_installed: a previous plain uninstall already removed
+  # the package (is_installed is now false) but deliberately left keys and
+  # client configs on disk — a later --purge has to reach this regardless.
   if [[ "$PURGE" -eq 1 ]]; then
-    rm -rf "$BACKUP_ROOT"
-    ok "all backed-up data removed"
+    apt-get purge -y -qq 'wireguard-tools*' >/dev/null 2>&1 || true
+    rm -rf "$WG_DIR" /etc/sysctl.d/99-wireguard.conf "$BACKUP_ROOT"
+    ok "WireGuard removed"
+  elif [[ -n "$backup_dir" ]]; then
+    ok "WireGuard removed, keys and client configs kept at ${WG_DIR}, backed up to ${backup_dir}"
+  else
+    ok "WireGuard was already not installed; nothing further to remove"
   fi
 }
 
 cmd_status() {
-  is_installed || die "MariaDB (Docker) is not installed"
-  echo "service:  $(service_healthy && echo running || echo unhealthy)"
-  echo "address:  $(container_ip):3306"
+  is_installed || die "WireGuard is not installed"
+  echo "service:  $(systemctl is-active wg-quick@wg0 2>/dev/null || echo unknown)"
+  echo "address:  $(container_ip):${VPN_PORT} (UDP)"
   echo
-  docker_compose ps 2>&1 || true
+  wg show wg0 2>&1 || true
+  echo
+  echo "clients:"
+  list_clients | sed 's/^/  /'
 }
 
 main() {
   local cmd="${1:-}"
   if [[ -n "$cmd" ]]; then shift; fi
-  while (( "$#" )); do
-    case "$1" in
-      --dbpassword) DBPASSWORD="$2"; shift 2 ;;
-      --purge) PURGE=1; shift ;;
-      *) die "unknown option: $1" ;;
-    esac
-  done
-  if [[ -z "$DBPASSWORD" ]] && [[ -f "$COMPOSE_FILE" ]]; then
-    DBPASSWORD="$(sed -n 's/^\s*MARIADB_ROOT_PASSWORD:\s*//p' "$COMPOSE_FILE" | head -n1)"
-  fi
   case "$cmd" in
-    install) cmd_install ;;
-    update) cmd_update ;;
-    uninstall) cmd_uninstall ;;
+    install)
+      while (( "$#" )); do case "$1" in *) die "unknown option: $1" ;; esac; done
+      cmd_install ;;
+    update)
+      while (( "$#" )); do case "$1" in *) die "unknown option: $1" ;; esac; done
+      cmd_update ;;
+    uninstall)
+      while (( "$#" )); do
+        case "$1" in
+          --purge) PURGE=1; shift ;;
+          *) die "unknown option: $1" ;;
+        esac
+      done
+      cmd_uninstall ;;
     status) cmd_status ;;
+    add-client) require_root; add_client "${1:-}" ;;
+    remove-client) require_root; remove_client "${1:-}" ;;
+    list-clients) list_clients ;;
+    show-client) show_client "${1:-}" ;;
     *) die "unknown command: $cmd" ;;
   esac
 }
@@ -1451,33 +1613,9 @@ pvs_main() {
 # ---------------------------------------------------------------------------
 # Service hooks
 # ---------------------------------------------------------------------------
-svc_parse_option() {
-  case "$1" in
-    --dbpassword)
-      [[ -n "${2:-}" ]] || die "--dbpassword needs a value"
-      v_password "$2" || die "--dbpassword must be at least 8 characters"
-      DBPASSWORD="$2"; SVC_OPT_SHIFT=2; return 0 ;;
-  esac
-  return 1
-}
-
-svc_install_args() {
-  [[ -n "$DBPASSWORD" ]] || DBPASSWORD="$(generate_password)"
-  SVC_INSTALL_ARGS=(--dbpassword "$DBPASSWORD")
-}
-
-svc_plan_lines() {
-  if [[ -n "$DBPASSWORD" ]]; then
-    echo " DB password   : (as entered, hidden)"
-  else
-    echo " DB password   : (auto-generated, shown once after creation)"
-  fi
-}
-
 svc_summary_lines() {
-  echo " Connect       : mariadb -h ${2} -u root -p"
-  echo " DB password   : ${DBPASSWORD}"
-  echo " Port          : ${2}:3306"
+  echo " VPN endpoint  : ${2}:51820 (UDP)"
+  echo " First client  : pct exec ${1} -- /usr/local/sbin/wireguard-manage.sh show-client peer1"
 }
 
 pvs_main "$@"

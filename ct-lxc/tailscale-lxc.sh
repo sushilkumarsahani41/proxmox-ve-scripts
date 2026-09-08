@@ -1,141 +1,166 @@
 #!/usr/bin/env bash
 #
-# mariadb-docker-lxc.sh — MariaDB via Docker on Proxmox VE, create to
-# teardown. Run this on a PVE host, as root.
+# tailscale-lxc.sh — Tailscale mesh VPN on Proxmox VE, create to teardown.
+# Run this on a PVE host, as root.
 #
-# This is the Docker counterpart to ct-lxc/mariadb-lxc.sh, which installs
-# MariaDB natively from Debian's own repository. Same database, different
-# packaging — pick this one for pull-based updates and the official image.
-#
-#   create              Create a Debian LXC with Docker inside it, then run
-#                       the official mariadb image
-#   update <ctid>       mysqldump backup, `docker compose pull && up -d`,
-#                       verify it's back up and answering — restores the
-#                       dump and reports if not
-#   uninstall <ctid>    Back up (unless --purge), `docker compose down`
-#                       (--purge also removes the data and backups)
-#   status <ctid>       Show container status and readiness
+#   create              Create a Debian LXC and install Tailscale via its
+#                       own official install script (adds Tailscale's apt
+#                       repo, installs tailscale + tailscaled)
+#   update <ctid>       Back up Tailscale's state, apt upgrade, verify
+#                       tailscaled is still active — restores the backup
+#                       and reports if not
+#   uninstall <ctid>    Log out of the tailnet, remove the package (state
+#                       kept on disk). --purge also drops it and backups
+#   status <ctid>       Show this node's tailnet status (`tailscale status`)
 #
 # Usage:
-#   ./mariadb-docker-lxc.sh create [options]
-#   ./mariadb-docker-lxc.sh update <ctid>
-#   ./mariadb-docker-lxc.sh uninstall <ctid> [--purge]
-#   ./mariadb-docker-lxc.sh status <ctid>
+#   ./tailscale-lxc.sh create [options]
+#   ./tailscale-lxc.sh update <ctid>
+#   ./tailscale-lxc.sh uninstall <ctid> [--purge]
+#   ./tailscale-lxc.sh status <ctid>
 #
 # create options:
 #   -y, --defaults         Skip the questions and use the recommended values
 #   -i, --id <id>          Container ID (default: next free ID)
-#   -n, --hostname <name>  Container hostname (default: mariadb-docker)
+#   -n, --hostname <name>  Container hostname (default: tailscale)
 #   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
 #   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
 #   -b, --bridge <name>    Network bridge (default: vmbr0)
-#   -d, --disk <GB>        Disk size in GB (default: 4)
+#   -d, --disk <GB>        Disk size in GB (default: 2)
 #   -c, --cores <n>        CPU cores (default: 1)
-#   -m, --memory <MB>      RAM in MB (default: 1024)
-#   --static <cidr>        Static IP, e.g. 192.168.1.55/24 (default: dhcp)
+#   -m, --memory <MB>      RAM in MB (default: 512)
+#   --static <cidr>        Static IP, e.g. 192.168.1.63/24 (default: dhcp)
 #   --gateway <ip>         Gateway, required with --static
 #   --password <pass>      Container root password (default: random, shown
 #                           once after creation)
-#   --dbpassword <pass>    Password for the database `root` account (default:
-#                           random, shown once after creation, min 8
-#                           characters)
+#   --authkey <key>        An auth key from
+#                           https://login.tailscale.com/admin/settings/keys
+#                           — runs `tailscale up` automatically on install.
+#                           Omit it and run `pct exec <ctid> -- tailscale up`
+#                           yourself afterward (prints a login URL to visit)
+#                           — these are typically valid for a much longer
+#                           window than a one-shot claim token, so there's
+#                           no rush the way Plex's --claim has.
 #
-# Same network trade-off as the native script: the container publishes 3306
-# on all interfaces, reachable from your LAN with the printed password.
+# Run with no options on a terminal and it asks about each setting, showing
+# the recommended value in brackets — Enter accepts it. Pass any option (or
+# -y) and it runs straight through without asking, so scripts stay
+# predictable.
 #
-# Debian only, no --os choice: get.docker.com (Docker's own installer) has no
-# Alpine path. This needs internet access from the container to pull the
-# image, and again on every `update`.
+# What actually matters for reaching this container afterward is its
+# tailnet IP (100.x.x.x, shown by `status`), not its LAN address the way a
+# DNS or media server's IP does — so unlike most other services here, this
+# one has no static-IP recommendation of its own.
+#
+# Needs a `tun`-capable container: unprivileged LXCs have no access to
+# /dev/net/tun by default, and this project has no --features flag for it —
+# handled automatically (see CONTRIBUTING.md's write-up on enable_tun_device
+# in lib/pve.sh if you're curious what that actually does to the container).
+#
+# Debian only — Tailscale's official install script covers many distros,
+# but this project only wires up its Debian path.
 #
 # ---------------------------------------------------------------------------
 # GENERATED FILE - DO NOT EDIT.
-# Built by build.sh from src/ct-lxc/mariadb-docker/main.sh and src/lib/*.sh.
+# Built by build.sh from src/ct-lxc/tailscale/main.sh and src/lib/*.sh.
 # Edit the source, then run ./build.sh. See CONTRIBUTING.md.
 # ---------------------------------------------------------------------------
 
-PVS_SCRIPT_FILENAME="mariadb-docker-lxc.sh"
-PVS_SCRIPT_URL="https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/mariadb-docker-lxc.sh"
+PVS_SCRIPT_FILENAME="tailscale-lxc.sh"
+PVS_SCRIPT_URL="https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/tailscale-lxc.sh"
 
 set -Eeuo pipefail
 
 # ---------------------------------------------------------------------------
 # Service definition
 # ---------------------------------------------------------------------------
-SERVICE_ID="mariadb-docker"
-SERVICE_NAME="MariaDB (Docker)"
-# @tagline MariaDB via the official Docker image
+SERVICE_ID="tailscale"
+SERVICE_NAME="Tailscale"
+# @tagline Zero-config mesh VPN, no port-forwarding needed
 
-DEFAULT_HOSTNAME="mariadb-docker"
-DEFAULT_DISK_GB="4"
+DEFAULT_HOSTNAME="tailscale"
+DEFAULT_DISK_GB="2"
 DEFAULT_CORES="1"
-DEFAULT_MEMORY_MB="1024"
-DEFAULT_PREFER_STATIC="y"
-DEFAULT_NESTING="1"
-DEFAULT_KEYCTL="1"
+DEFAULT_MEMORY_MB="512"
+DEFAULT_NEEDS_TUN="1"
 
-DBPASSWORD=""
+AUTH_KEY=""
 
 pvs_usage_text() {
 cat <<'EOF_PVS_USAGE'
 
-mariadb-docker-lxc.sh — MariaDB via Docker on Proxmox VE, create to
-teardown. Run this on a PVE host, as root.
+tailscale-lxc.sh — Tailscale mesh VPN on Proxmox VE, create to teardown.
+Run this on a PVE host, as root.
 
-This is the Docker counterpart to ct-lxc/mariadb-lxc.sh, which installs
-MariaDB natively from Debian's own repository. Same database, different
-packaging — pick this one for pull-based updates and the official image.
-
-  create              Create a Debian LXC with Docker inside it, then run
-                      the official mariadb image
-  update <ctid>       mysqldump backup, `docker compose pull && up -d`,
-                      verify it's back up and answering — restores the
-                      dump and reports if not
-  uninstall <ctid>    Back up (unless --purge), `docker compose down`
-                      (--purge also removes the data and backups)
-  status <ctid>       Show container status and readiness
+  create              Create a Debian LXC and install Tailscale via its
+                      own official install script (adds Tailscale's apt
+                      repo, installs tailscale + tailscaled)
+  update <ctid>       Back up Tailscale's state, apt upgrade, verify
+                      tailscaled is still active — restores the backup
+                      and reports if not
+  uninstall <ctid>    Log out of the tailnet, remove the package (state
+                      kept on disk). --purge also drops it and backups
+  status <ctid>       Show this node's tailnet status (`tailscale status`)
 
 Usage:
-  ./mariadb-docker-lxc.sh create [options]
-  ./mariadb-docker-lxc.sh update <ctid>
-  ./mariadb-docker-lxc.sh uninstall <ctid> [--purge]
-  ./mariadb-docker-lxc.sh status <ctid>
+  ./tailscale-lxc.sh create [options]
+  ./tailscale-lxc.sh update <ctid>
+  ./tailscale-lxc.sh uninstall <ctid> [--purge]
+  ./tailscale-lxc.sh status <ctid>
 
 create options:
   -y, --defaults         Skip the questions and use the recommended values
   -i, --id <id>          Container ID (default: next free ID)
-  -n, --hostname <name>  Container hostname (default: mariadb-docker)
+  -n, --hostname <name>  Container hostname (default: tailscale)
   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
   -b, --bridge <name>    Network bridge (default: vmbr0)
-  -d, --disk <GB>        Disk size in GB (default: 4)
+  -d, --disk <GB>        Disk size in GB (default: 2)
   -c, --cores <n>        CPU cores (default: 1)
-  -m, --memory <MB>      RAM in MB (default: 1024)
-  --static <cidr>        Static IP, e.g. 192.168.1.55/24 (default: dhcp)
+  -m, --memory <MB>      RAM in MB (default: 512)
+  --static <cidr>        Static IP, e.g. 192.168.1.63/24 (default: dhcp)
   --gateway <ip>         Gateway, required with --static
   --password <pass>      Container root password (default: random, shown
                           once after creation)
-  --dbpassword <pass>    Password for the database `root` account (default:
-                          random, shown once after creation, min 8
-                          characters)
+  --authkey <key>        An auth key from
+                          https://login.tailscale.com/admin/settings/keys
+                          — runs `tailscale up` automatically on install.
+                          Omit it and run `pct exec <ctid> -- tailscale up`
+                          yourself afterward (prints a login URL to visit)
+                          — these are typically valid for a much longer
+                          window than a one-shot claim token, so there's
+                          no rush the way Plex's --claim has.
 
-Same network trade-off as the native script: the container publishes 3306
-on all interfaces, reachable from your LAN with the printed password.
+Run with no options on a terminal and it asks about each setting, showing
+the recommended value in brackets — Enter accepts it. Pass any option (or
+-y) and it runs straight through without asking, so scripts stay
+predictable.
 
-Debian only, no --os choice: get.docker.com (Docker's own installer) has no
-Alpine path. This needs internet access from the container to pull the
-image, and again on every `update`.
+What actually matters for reaching this container afterward is its
+tailnet IP (100.x.x.x, shown by `status`), not its LAN address the way a
+DNS or media server's IP does — so unlike most other services here, this
+one has no static-IP recommendation of its own.
+
+Needs a `tun`-capable container: unprivileged LXCs have no access to
+/dev/net/tun by default, and this project has no --features flag for it —
+handled automatically (see CONTRIBUTING.md's write-up on enable_tun_device
+in lib/pve.sh if you're curious what that actually does to the container).
+
+Debian only — Tailscale's official install script covers many distros,
+but this project only wires up its Debian path.
 EOF_PVS_USAGE
 }
 manage_script() {
 cat <<'EOF_MANAGE_SCRIPT'
 #!/usr/bin/env bash
-# In-container management for MariaDB (Docker). Pushed to
-# /usr/local/sbin/mariadb-docker-manage.sh and re-pushed on every command, so
-# the container always matches the host script's version.
+# In-container management for Tailscale. Pushed to
+# /usr/local/sbin/tailscale-manage.sh and re-pushed on every command, so the
+# container always matches the host script's version.
 #
-# Delegates to the official mariadb image and `docker compose` for
-# everything — the same principle as this project's native MariaDB script,
-# applied to a vendor *image* instead of a vendor *package*.
+# Delegates entirely to Tailscale's own official install script
+# (tailscale.com/install.sh), which adds Tailscale's apt repo and installs
+# the real tailscale/tailscaled packages — this project doesn't reimplement
+# any of that.
 set -Eeuo pipefail
 
 # lib/agent-ui.sh — the small preamble every in-container management script
@@ -222,44 +247,25 @@ ensure_docker() {
   command -v docker >/dev/null 2>&1 || die "Docker installer finished but 'docker' is still not on PATH"
 }
 
-APP_DIR="/opt/mariadb-docker"
-COMPOSE_FILE="${APP_DIR}/compose.yaml"
-DATA_DIR="${APP_DIR}/data"
-BACKUP_ROOT="/var/backups/mariadb-docker"
-DBPASSWORD=""
+DATA_DIR="/var/lib/tailscale"
+BACKUP_ROOT="/var/backups/tailscale-lxc"
+INSTALLER_URL="https://tailscale.com/install.sh"
+AUTH_KEY=""
 PURGE=0
 
-is_installed() { [[ -f "$COMPOSE_FILE" ]]; }
+is_installed() { dpkg-query -W -f='${Status}' tailscale 2>/dev/null | grep -q '^install ok installed'; }
 has_data() {
   { [[ -d "$BACKUP_ROOT" ]] && [[ -n "$(ls -A "$BACKUP_ROOT" 2>/dev/null)" ]]; } \
     || { [[ -d "$DATA_DIR" ]] && [[ -n "$(ls -A "$DATA_DIR" 2>/dev/null)" ]]; }
 }
 
-docker_compose() { ( cd "$APP_DIR" && docker compose "$@" ); }
-
-write_compose_file() {
-  mkdir -p "$APP_DIR" "$DATA_DIR"
-  cat > "$COMPOSE_FILE" <<EOF
-services:
-  mariadb:
-    image: mariadb:11
-    restart: unless-stopped
-    ports:
-      - "3306:3306"
-    environment:
-      MARIADB_ROOT_PASSWORD: ${DBPASSWORD}
-    volumes:
-      - ${DATA_DIR}:/var/lib/mysql
-EOF
-}
-
-service_healthy() { docker_compose exec -T mariadb mariadb-admin ping -uroot -p"${DBPASSWORD}" >/dev/null 2>&1; }
+service_healthy() { systemctl is-active --quiet tailscaled; }
 
 wait_for_service() {
-  local tries=30
+  local tries=15
   while (( tries > 0 )); do
     service_healthy && return 0
-    sleep 2
+    sleep 1
     tries=$(( tries - 1 ))
   done
   return 1
@@ -268,64 +274,69 @@ wait_for_service() {
 backup_state() {
   local backup_dir="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$backup_dir"
-  docker_compose exec -T mariadb mariadb-dump -uroot -p"${DBPASSWORD}" --all-databases \
-    > "${backup_dir}/dump.sql" 2>/dev/null || true
+  [[ -d "$DATA_DIR" ]] && cp -a "$DATA_DIR" "${backup_dir}/tailscale"
   echo "$backup_dir"
 }
 
 restore_state() {
   local backup_dir="$1"
-  [[ -f "${backup_dir}/dump.sql" ]] || return 0
-  docker_compose exec -T mariadb mariadb -uroot -p"${DBPASSWORD}" < "${backup_dir}/dump.sql" >/dev/null 2>&1 || true
+  [[ -d "${backup_dir}/tailscale" ]] || return 0
+  rm -rf "$DATA_DIR"
+  cp -a "${backup_dir}/tailscale" "$DATA_DIR"
 }
 
 print_access_info() {
   echo
-  ok "MariaDB: mariadb -h $(container_ip) -u root -p"
+  if tailscale ip -4 >/dev/null 2>&1; then
+    ok "Tailscale: $(tailscale ip -4 2>/dev/null | head -n1) (joined the tailnet)"
+  else
+    ok "Tailscale installed, not yet joined a tailnet — run: pct exec <ctid> -- tailscale up"
+  fi
 }
 
 cmd_install() {
   require_root
-  ensure_docker
-  is_installed && die "MariaDB (Docker) is already installed — use 'update' instead"
+  is_installed && die "Tailscale is already installed — use 'update' instead"
 
-  write_compose_file
-  docker_compose up -d || die "docker compose up failed — see: docker compose -f ${COMPOSE_FILE} logs"
+  local tmp_script
+  tmp_script="$(mktemp)"
+  curl -fsSL "$INSTALLER_URL" -o "$tmp_script" || { rm -f "$tmp_script"; die "failed to download Tailscale's installer"; }
+  sh "$tmp_script" >/dev/null || { rm -f "$tmp_script"; die "Tailscale installation failed"; }
+  rm -f "$tmp_script"
 
-  if ! wait_for_service; then
-    warn "MariaDB did not become healthy within the expected time"
-    docker_compose ps >&2 || true
-    die "install did not verify healthy — check: docker compose -f ${COMPOSE_FILE} logs"
+  is_installed || die "tailscale installed but is not detected — check: dpkg -s tailscale"
+
+  systemctl enable --now tailscaled >/dev/null 2>&1
+  wait_for_service || die "tailscaled did not come up after install — check: systemctl status tailscaled"
+
+  if [[ -n "$AUTH_KEY" ]]; then
+    tailscale up --authkey="$AUTH_KEY" || die "tailscale up failed with the given --authkey — check: journalctl -u tailscaled"
   fi
 
-  ok "MariaDB (Docker) installed"
+  ok "Tailscale installed"
   print_access_info
 }
 
 cmd_update() {
   require_root
-  is_installed || die "MariaDB (Docker) is not installed — use 'install' instead"
+  is_installed || die "Tailscale is not installed — use 'install' instead"
 
   local backup_dir
   backup_dir="$(backup_state)"
-  ok "backed up all databases to ${backup_dir}/dump.sql"
+  ok "backed up state to ${backup_dir}"
 
-  if ! docker_compose pull; then
-    warn "docker compose pull failed — leaving the running container untouched"
-    die "update failed, nothing was changed"
+  apt-get update -qq
+  if ! apt-get install -y -qq --only-upgrade tailscale >/dev/null 2>&1; then
+    warn "apt upgrade reported an issue — continuing to verify the running service"
   fi
 
-  if ! docker_compose up -d; then
-    warn "docker compose up failed after pulling the new image — restoring data from backup"
-    restore_state "$backup_dir"
-    die "update failed, data restored from ${backup_dir}/dump.sql — check: docker compose -f ${COMPOSE_FILE} logs"
-  fi
+  systemctl restart tailscaled 2>/dev/null || true
 
   if ! wait_for_service; then
-    warn "MariaDB did not come back up healthy after the update — restoring data from backup"
+    warn "tailscaled did not come back up after the update — restoring from backup"
     restore_state "$backup_dir"
-    docker_compose up -d >/dev/null 2>&1 || true
-    die "update failed, data restored from ${backup_dir}/dump.sql — the image itself is not rolled back by this; check: docker compose -f ${COMPOSE_FILE} logs"
+    systemctl restart tailscaled 2>/dev/null || true
+    die "update failed, data restored from ${backup_dir} — check: systemctl status tailscaled"
   fi
 
   ok "updated"
@@ -335,38 +346,40 @@ cmd_update() {
 cmd_uninstall() {
   require_root
   if ! is_installed && ! has_data; then
-    die "MariaDB (Docker) is not installed and there is no backed-up data to remove"
+    die "Tailscale is not installed and there is no backed-up data to remove"
   fi
 
+  local backup_dir=""
   if is_installed; then
-    local backup_dir=""
     if [[ "$PURGE" -eq 0 ]]; then
       backup_dir="$(backup_state)"
     fi
-    docker_compose down >/dev/null 2>&1 || warn "docker compose down reported an issue — continuing"
-    rm -f "$COMPOSE_FILE"
-    rm -rf "$DATA_DIR"
-    if [[ -n "$backup_dir" ]]; then
-      ok "MariaDB (Docker) removed, data kept at ${backup_dir}"
-    else
-      ok "MariaDB (Docker) removed"
-    fi
-  elif [[ -d "$DATA_DIR" ]]; then
-    rm -rf "$DATA_DIR"
+    # Best-effort: lets this node disappear from the tailnet admin console
+    # cleanly instead of lingering as "offline" forever. Not fatal if it
+    # was never joined in the first place.
+    tailscale logout >/dev/null 2>&1 || true
+    apt-get remove -y -qq 'tailscale*' >/dev/null 2>&1 || warn "apt remove reported an issue — continuing"
   fi
 
+  # Not gated on is_installed: a previous plain uninstall already removed
+  # the package (is_installed is now false) but deliberately left state on
+  # disk — a later --purge has to reach this regardless.
   if [[ "$PURGE" -eq 1 ]]; then
-    rm -rf "$BACKUP_ROOT"
-    ok "all backed-up data removed"
+    apt-get purge -y -qq 'tailscale*' >/dev/null 2>&1 || true
+    rm -rf "$DATA_DIR" "$BACKUP_ROOT"
+    ok "Tailscale removed"
+  elif [[ -n "$backup_dir" ]]; then
+    ok "Tailscale removed, state kept at ${DATA_DIR}, backed up to ${backup_dir}"
+  else
+    ok "Tailscale was already not installed; nothing further to remove"
   fi
 }
 
 cmd_status() {
-  is_installed || die "MariaDB (Docker) is not installed"
-  echo "service:  $(service_healthy && echo running || echo unhealthy)"
-  echo "address:  $(container_ip):3306"
+  is_installed || die "Tailscale is not installed"
+  echo "service:  $(systemctl is-active tailscaled 2>/dev/null || echo unknown)"
   echo
-  docker_compose ps 2>&1 || true
+  tailscale status 2>&1 || true
 }
 
 main() {
@@ -374,14 +387,11 @@ main() {
   if [[ -n "$cmd" ]]; then shift; fi
   while (( "$#" )); do
     case "$1" in
-      --dbpassword) DBPASSWORD="$2"; shift 2 ;;
+      --authkey) AUTH_KEY="$2"; shift 2 ;;
       --purge) PURGE=1; shift ;;
       *) die "unknown option: $1" ;;
     esac
   done
-  if [[ -z "$DBPASSWORD" ]] && [[ -f "$COMPOSE_FILE" ]]; then
-    DBPASSWORD="$(sed -n 's/^\s*MARIADB_ROOT_PASSWORD:\s*//p' "$COMPOSE_FILE" | head -n1)"
-  fi
   case "$cmd" in
     install) cmd_install ;;
     update) cmd_update ;;
@@ -1453,31 +1463,31 @@ pvs_main() {
 # ---------------------------------------------------------------------------
 svc_parse_option() {
   case "$1" in
-    --dbpassword)
-      [[ -n "${2:-}" ]] || die "--dbpassword needs a value"
-      v_password "$2" || die "--dbpassword must be at least 8 characters"
-      DBPASSWORD="$2"; SVC_OPT_SHIFT=2; return 0 ;;
+    --authkey)
+      [[ -n "${2:-}" ]] || die "--authkey needs a value — get one from https://login.tailscale.com/admin/settings/keys"
+      AUTH_KEY="$2"; SVC_OPT_SHIFT=2; return 0 ;;
   esac
   return 1
 }
 
 svc_install_args() {
-  [[ -n "$DBPASSWORD" ]] || DBPASSWORD="$(generate_password)"
-  SVC_INSTALL_ARGS=(--dbpassword "$DBPASSWORD")
-}
-
-svc_plan_lines() {
-  if [[ -n "$DBPASSWORD" ]]; then
-    echo " DB password   : (as entered, hidden)"
+  if [[ -n "$AUTH_KEY" ]]; then
+    SVC_INSTALL_ARGS=(--authkey "$AUTH_KEY")
   else
-    echo " DB password   : (auto-generated, shown once after creation)"
+    SVC_INSTALL_ARGS=()
   fi
 }
 
+svc_plan_lines() {
+  if [[ -n "$AUTH_KEY" ]]; then
+    echo " Auth key      : provided — will join the tailnet automatically"
+  fi
+  return 0
+}
+
 svc_summary_lines() {
-  echo " Connect       : mariadb -h ${2} -u root -p"
-  echo " DB password   : ${DBPASSWORD}"
-  echo " Port          : ${2}:3306"
+  echo " Join manually : pct exec ${1} -- tailscale up   (if no --authkey was given)"
+  echo " Tailnet status: pct exec ${1} -- tailscale status"
 }
 
 pvs_main "$@"

@@ -1,47 +1,61 @@
 #!/usr/bin/env bash
 #
-# mariadb-docker-lxc.sh — MariaDB via Docker on Proxmox VE, create to
+# nginx-proxy-manager-lxc.sh — Nginx Proxy Manager on Proxmox VE, create to
 # teardown. Run this on a PVE host, as root.
 #
-# This is the Docker counterpart to ct-lxc/mariadb-lxc.sh, which installs
-# MariaDB natively from Debian's own repository. Same database, different
-# packaging — pick this one for pull-based updates and the official image.
+# Docker-only, the same shape as ct-lxc/floci-lxc.sh: Nginx Proxy Manager's
+# own project ships no apt package, no install script, and no documented
+# non-Docker install path at all — checked directly against its own docs
+# and a real GitHub issue asking for exactly this, not assumed. Its own
+# docker-compose examples point at `jc21/nginx-proxy-manager`, so that's
+# the image used here.
 #
 #   create              Create a Debian LXC with Docker inside it, then run
-#                       the official mariadb image
-#   update <ctid>       mysqldump backup, `docker compose pull && up -d`,
-#                       verify it's back up and answering — restores the
-#                       dump and reports if not
+#                       the jc21/nginx-proxy-manager image
+#   update <ctid>       Back up data/certificates, `docker compose pull &&
+#                       up -d`, verify the admin UI answers — restores the
+#                       backup and reports if not
 #   uninstall <ctid>    Back up (unless --purge), `docker compose down`
 #                       (--purge also removes the data and backups)
 #   status <ctid>       Show container status and readiness
 #
 # Usage:
-#   ./mariadb-docker-lxc.sh create [options]
-#   ./mariadb-docker-lxc.sh update <ctid>
-#   ./mariadb-docker-lxc.sh uninstall <ctid> [--purge]
-#   ./mariadb-docker-lxc.sh status <ctid>
+#   ./nginx-proxy-manager-lxc.sh create [options]
+#   ./nginx-proxy-manager-lxc.sh update <ctid>
+#   ./nginx-proxy-manager-lxc.sh uninstall <ctid> [--purge]
+#   ./nginx-proxy-manager-lxc.sh status <ctid>
 #
 # create options:
 #   -y, --defaults         Skip the questions and use the recommended values
 #   -i, --id <id>          Container ID (default: next free ID)
-#   -n, --hostname <name>  Container hostname (default: mariadb-docker)
+#   -n, --hostname <name>  Container hostname (default: nginx-proxy-manager)
 #   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
 #   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
 #   -b, --bridge <name>    Network bridge (default: vmbr0)
 #   -d, --disk <GB>        Disk size in GB (default: 4)
 #   -c, --cores <n>        CPU cores (default: 1)
 #   -m, --memory <MB>      RAM in MB (default: 1024)
-#   --static <cidr>        Static IP, e.g. 192.168.1.55/24 (default: dhcp)
+#   --static <cidr>        Static IP, e.g. 192.168.1.64/24 (default: dhcp)
 #   --gateway <ip>         Gateway, required with --static
 #   --password <pass>      Container root password (default: random, shown
 #                           once after creation)
-#   --dbpassword <pass>    Password for the database `root` account (default:
-#                           random, shown once after creation, min 8
-#                           characters)
 #
-# Same network trade-off as the native script: the container publishes 3306
-# on all interfaces, reachable from your LAN with the printed password.
+# There is no --webpassword-style flag: current releases of Nginx Proxy
+# Manager no longer ship a fixed default admin login — its own frontend
+# checks for an empty user table and walks you through creating your first
+# admin account on first visit instead (confirmed directly against a fresh
+# install's database, not from older tutorials still repeating the
+# once-real admin@example.com / changeme default). There's no CLI or env
+# var to seed an account instead, so open the URL this prints and complete
+# the setup screen there, the same as Jellyfin and AdGuard Home.
+#
+# Run with no options on a terminal and it asks about each setting, showing
+# the recommended value in brackets — Enter accepts it. Pass any option (or
+# -y) and it runs straight through without asking, so scripts stay
+# predictable.
+#
+# A reverse proxy wants a fixed address — it's the front door every other
+# service on your LAN would point at. Static IP is recommended.
 #
 # Debian only, no --os choice: get.docker.com (Docker's own installer) has no
 # Alpine path. This needs internet access from the container to pull the
@@ -49,23 +63,23 @@
 #
 # ---------------------------------------------------------------------------
 # GENERATED FILE - DO NOT EDIT.
-# Built by build.sh from src/ct-lxc/mariadb-docker/main.sh and src/lib/*.sh.
+# Built by build.sh from src/ct-lxc/nginx-proxy-manager/main.sh and src/lib/*.sh.
 # Edit the source, then run ./build.sh. See CONTRIBUTING.md.
 # ---------------------------------------------------------------------------
 
-PVS_SCRIPT_FILENAME="mariadb-docker-lxc.sh"
-PVS_SCRIPT_URL="https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/mariadb-docker-lxc.sh"
+PVS_SCRIPT_FILENAME="nginx-proxy-manager-lxc.sh"
+PVS_SCRIPT_URL="https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/nginx-proxy-manager-lxc.sh"
 
 set -Eeuo pipefail
 
 # ---------------------------------------------------------------------------
 # Service definition
 # ---------------------------------------------------------------------------
-SERVICE_ID="mariadb-docker"
-SERVICE_NAME="MariaDB (Docker)"
-# @tagline MariaDB via the official Docker image
+SERVICE_ID="nginx-proxy-manager"
+SERVICE_NAME="Nginx Proxy Manager"
+# @tagline Reverse proxy admin UI with free Let's Encrypt certificates
 
-DEFAULT_HOSTNAME="mariadb-docker"
+DEFAULT_HOSTNAME="nginx-proxy-manager"
 DEFAULT_DISK_GB="4"
 DEFAULT_CORES="1"
 DEFAULT_MEMORY_MB="1024"
@@ -73,53 +87,65 @@ DEFAULT_PREFER_STATIC="y"
 DEFAULT_NESTING="1"
 DEFAULT_KEYCTL="1"
 
-DBPASSWORD=""
-
 pvs_usage_text() {
 cat <<'EOF_PVS_USAGE'
 
-mariadb-docker-lxc.sh — MariaDB via Docker on Proxmox VE, create to
+nginx-proxy-manager-lxc.sh — Nginx Proxy Manager on Proxmox VE, create to
 teardown. Run this on a PVE host, as root.
 
-This is the Docker counterpart to ct-lxc/mariadb-lxc.sh, which installs
-MariaDB natively from Debian's own repository. Same database, different
-packaging — pick this one for pull-based updates and the official image.
+Docker-only, the same shape as ct-lxc/floci-lxc.sh: Nginx Proxy Manager's
+own project ships no apt package, no install script, and no documented
+non-Docker install path at all — checked directly against its own docs
+and a real GitHub issue asking for exactly this, not assumed. Its own
+docker-compose examples point at `jc21/nginx-proxy-manager`, so that's
+the image used here.
 
   create              Create a Debian LXC with Docker inside it, then run
-                      the official mariadb image
-  update <ctid>       mysqldump backup, `docker compose pull && up -d`,
-                      verify it's back up and answering — restores the
-                      dump and reports if not
+                      the jc21/nginx-proxy-manager image
+  update <ctid>       Back up data/certificates, `docker compose pull &&
+                      up -d`, verify the admin UI answers — restores the
+                      backup and reports if not
   uninstall <ctid>    Back up (unless --purge), `docker compose down`
                       (--purge also removes the data and backups)
   status <ctid>       Show container status and readiness
 
 Usage:
-  ./mariadb-docker-lxc.sh create [options]
-  ./mariadb-docker-lxc.sh update <ctid>
-  ./mariadb-docker-lxc.sh uninstall <ctid> [--purge]
-  ./mariadb-docker-lxc.sh status <ctid>
+  ./nginx-proxy-manager-lxc.sh create [options]
+  ./nginx-proxy-manager-lxc.sh update <ctid>
+  ./nginx-proxy-manager-lxc.sh uninstall <ctid> [--purge]
+  ./nginx-proxy-manager-lxc.sh status <ctid>
 
 create options:
   -y, --defaults         Skip the questions and use the recommended values
   -i, --id <id>          Container ID (default: next free ID)
-  -n, --hostname <name>  Container hostname (default: mariadb-docker)
+  -n, --hostname <name>  Container hostname (default: nginx-proxy-manager)
   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
   -b, --bridge <name>    Network bridge (default: vmbr0)
   -d, --disk <GB>        Disk size in GB (default: 4)
   -c, --cores <n>        CPU cores (default: 1)
   -m, --memory <MB>      RAM in MB (default: 1024)
-  --static <cidr>        Static IP, e.g. 192.168.1.55/24 (default: dhcp)
+  --static <cidr>        Static IP, e.g. 192.168.1.64/24 (default: dhcp)
   --gateway <ip>         Gateway, required with --static
   --password <pass>      Container root password (default: random, shown
                           once after creation)
-  --dbpassword <pass>    Password for the database `root` account (default:
-                          random, shown once after creation, min 8
-                          characters)
 
-Same network trade-off as the native script: the container publishes 3306
-on all interfaces, reachable from your LAN with the printed password.
+There is no --webpassword-style flag: current releases of Nginx Proxy
+Manager no longer ship a fixed default admin login — its own frontend
+checks for an empty user table and walks you through creating your first
+admin account on first visit instead (confirmed directly against a fresh
+install's database, not from older tutorials still repeating the
+once-real admin@example.com / changeme default). There's no CLI or env
+var to seed an account instead, so open the URL this prints and complete
+the setup screen there, the same as Jellyfin and AdGuard Home.
+
+Run with no options on a terminal and it asks about each setting, showing
+the recommended value in brackets — Enter accepts it. Pass any option (or
+-y) and it runs straight through without asking, so scripts stay
+predictable.
+
+A reverse proxy wants a fixed address — it's the front door every other
+service on your LAN would point at. Static IP is recommended.
 
 Debian only, no --os choice: get.docker.com (Docker's own installer) has no
 Alpine path. This needs internet access from the container to pull the
@@ -129,13 +155,13 @@ EOF_PVS_USAGE
 manage_script() {
 cat <<'EOF_MANAGE_SCRIPT'
 #!/usr/bin/env bash
-# In-container management for MariaDB (Docker). Pushed to
-# /usr/local/sbin/mariadb-docker-manage.sh and re-pushed on every command, so
-# the container always matches the host script's version.
+# In-container management for Nginx Proxy Manager. Pushed to
+# /usr/local/sbin/nginx-proxy-manager-manage.sh and re-pushed on every
+# command, so the container always matches the host script's version.
 #
-# Delegates to the official mariadb image and `docker compose` for
-# everything — the same principle as this project's native MariaDB script,
-# applied to a vendor *image* instead of a vendor *package*.
+# Delegates to the jc21/nginx-proxy-manager image and `docker compose` for
+# everything — the image the project's own docs point at, since there is no
+# vendor apt package or install script to delegate to instead.
 set -Eeuo pipefail
 
 # lib/agent-ui.sh — the small preamble every in-container management script
@@ -222,11 +248,11 @@ ensure_docker() {
   command -v docker >/dev/null 2>&1 || die "Docker installer finished but 'docker' is still not on PATH"
 }
 
-APP_DIR="/opt/mariadb-docker"
+APP_DIR="/opt/nginx-proxy-manager"
 COMPOSE_FILE="${APP_DIR}/compose.yaml"
 DATA_DIR="${APP_DIR}/data"
-BACKUP_ROOT="/var/backups/mariadb-docker"
-DBPASSWORD=""
+LETSENCRYPT_DIR="${APP_DIR}/letsencrypt"
+BACKUP_ROOT="/var/backups/nginx-proxy-manager"
 PURGE=0
 
 is_installed() { [[ -f "$COMPOSE_FILE" ]]; }
@@ -238,22 +264,26 @@ has_data() {
 docker_compose() { ( cd "$APP_DIR" && docker compose "$@" ); }
 
 write_compose_file() {
-  mkdir -p "$APP_DIR" "$DATA_DIR"
+  mkdir -p "$APP_DIR" "$DATA_DIR" "$LETSENCRYPT_DIR"
   cat > "$COMPOSE_FILE" <<EOF
 services:
-  mariadb:
-    image: mariadb:11
+  npm:
+    image: jc21/nginx-proxy-manager:latest
     restart: unless-stopped
     ports:
-      - "3306:3306"
-    environment:
-      MARIADB_ROOT_PASSWORD: ${DBPASSWORD}
+      - "80:80"
+      - "443:443"
+      - "81:81"
     volumes:
-      - ${DATA_DIR}:/var/lib/mysql
+      - ${DATA_DIR}:/data
+      - ${LETSENCRYPT_DIR}:/etc/letsencrypt
 EOF
 }
 
-service_healthy() { docker_compose exec -T mariadb mariadb-admin ping -uroot -p"${DBPASSWORD}" >/dev/null 2>&1; }
+# No dedicated health endpoint is documented — the admin UI's own login
+# page (a 200 on its root path) is the same fallback this project already
+# uses for other services with no cleaner signal (see adguard-home-docker).
+service_healthy() { curl -fsS -o /dev/null "http://localhost:81/" 2>/dev/null; }
 
 wait_for_service() {
   local tries=30
@@ -268,47 +298,47 @@ wait_for_service() {
 backup_state() {
   local backup_dir="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$backup_dir"
-  docker_compose exec -T mariadb mariadb-dump -uroot -p"${DBPASSWORD}" --all-databases \
-    > "${backup_dir}/dump.sql" 2>/dev/null || true
+  [[ -d "$DATA_DIR" ]] && cp -a "$DATA_DIR" "${backup_dir}/data"
+  [[ -d "$LETSENCRYPT_DIR" ]] && cp -a "$LETSENCRYPT_DIR" "${backup_dir}/letsencrypt"
   echo "$backup_dir"
 }
 
 restore_state() {
   local backup_dir="$1"
-  [[ -f "${backup_dir}/dump.sql" ]] || return 0
-  docker_compose exec -T mariadb mariadb -uroot -p"${DBPASSWORD}" < "${backup_dir}/dump.sql" >/dev/null 2>&1 || true
+  [[ -d "${backup_dir}/data" ]] && { rm -rf "$DATA_DIR"; cp -a "${backup_dir}/data" "$DATA_DIR"; }
+  [[ -d "${backup_dir}/letsencrypt" ]] && { rm -rf "$LETSENCRYPT_DIR"; cp -a "${backup_dir}/letsencrypt" "$LETSENCRYPT_DIR"; }
 }
 
 print_access_info() {
   echo
-  ok "MariaDB: mariadb -h $(container_ip) -u root -p"
+  ok "Nginx Proxy Manager: http://$(container_ip):81"
 }
 
 cmd_install() {
   require_root
   ensure_docker
-  is_installed && die "MariaDB (Docker) is already installed — use 'update' instead"
+  is_installed && die "Nginx Proxy Manager is already installed — use 'update' instead"
 
   write_compose_file
   docker_compose up -d || die "docker compose up failed — see: docker compose -f ${COMPOSE_FILE} logs"
 
   if ! wait_for_service; then
-    warn "MariaDB did not become healthy within the expected time"
+    warn "Nginx Proxy Manager did not become healthy within the expected time"
     docker_compose ps >&2 || true
     die "install did not verify healthy — check: docker compose -f ${COMPOSE_FILE} logs"
   fi
 
-  ok "MariaDB (Docker) installed"
+  ok "Nginx Proxy Manager installed"
   print_access_info
 }
 
 cmd_update() {
   require_root
-  is_installed || die "MariaDB (Docker) is not installed — use 'install' instead"
+  is_installed || die "Nginx Proxy Manager is not installed — use 'install' instead"
 
   local backup_dir
   backup_dir="$(backup_state)"
-  ok "backed up all databases to ${backup_dir}/dump.sql"
+  ok "backed up data/certificates to ${backup_dir}"
 
   if ! docker_compose pull; then
     warn "docker compose pull failed — leaving the running container untouched"
@@ -318,14 +348,14 @@ cmd_update() {
   if ! docker_compose up -d; then
     warn "docker compose up failed after pulling the new image — restoring data from backup"
     restore_state "$backup_dir"
-    die "update failed, data restored from ${backup_dir}/dump.sql — check: docker compose -f ${COMPOSE_FILE} logs"
+    die "update failed, data restored from ${backup_dir} — check: docker compose -f ${COMPOSE_FILE} logs"
   fi
 
   if ! wait_for_service; then
-    warn "MariaDB did not come back up healthy after the update — restoring data from backup"
+    warn "Nginx Proxy Manager did not come back up healthy after the update — restoring data from backup"
     restore_state "$backup_dir"
     docker_compose up -d >/dev/null 2>&1 || true
-    die "update failed, data restored from ${backup_dir}/dump.sql — the image itself is not rolled back by this; check: docker compose -f ${COMPOSE_FILE} logs"
+    die "update failed, data restored from ${backup_dir} — the image itself is not rolled back by this; check: docker compose -f ${COMPOSE_FILE} logs"
   fi
 
   ok "updated"
@@ -335,7 +365,7 @@ cmd_update() {
 cmd_uninstall() {
   require_root
   if ! is_installed && ! has_data; then
-    die "MariaDB (Docker) is not installed and there is no backed-up data to remove"
+    die "Nginx Proxy Manager is not installed and there is no backed-up data to remove"
   fi
 
   if is_installed; then
@@ -345,14 +375,14 @@ cmd_uninstall() {
     fi
     docker_compose down >/dev/null 2>&1 || warn "docker compose down reported an issue — continuing"
     rm -f "$COMPOSE_FILE"
-    rm -rf "$DATA_DIR"
+    rm -rf "$DATA_DIR" "$LETSENCRYPT_DIR"
     if [[ -n "$backup_dir" ]]; then
-      ok "MariaDB (Docker) removed, data kept at ${backup_dir}"
+      ok "Nginx Proxy Manager removed, data kept at ${backup_dir}"
     else
-      ok "MariaDB (Docker) removed"
+      ok "Nginx Proxy Manager removed"
     fi
-  elif [[ -d "$DATA_DIR" ]]; then
-    rm -rf "$DATA_DIR"
+  elif [[ -d "$DATA_DIR" ]] || [[ -d "$LETSENCRYPT_DIR" ]]; then
+    rm -rf "$DATA_DIR" "$LETSENCRYPT_DIR"
   fi
 
   if [[ "$PURGE" -eq 1 ]]; then
@@ -362,9 +392,9 @@ cmd_uninstall() {
 }
 
 cmd_status() {
-  is_installed || die "MariaDB (Docker) is not installed"
+  is_installed || die "Nginx Proxy Manager is not installed"
   echo "service:  $(service_healthy && echo running || echo unhealthy)"
-  echo "address:  $(container_ip):3306"
+  echo "address:  http://$(container_ip):81"
   echo
   docker_compose ps 2>&1 || true
 }
@@ -374,14 +404,10 @@ main() {
   if [[ -n "$cmd" ]]; then shift; fi
   while (( "$#" )); do
     case "$1" in
-      --dbpassword) DBPASSWORD="$2"; shift 2 ;;
       --purge) PURGE=1; shift ;;
       *) die "unknown option: $1" ;;
     esac
   done
-  if [[ -z "$DBPASSWORD" ]] && [[ -f "$COMPOSE_FILE" ]]; then
-    DBPASSWORD="$(sed -n 's/^\s*MARIADB_ROOT_PASSWORD:\s*//p' "$COMPOSE_FILE" | head -n1)"
-  fi
   case "$cmd" in
     install) cmd_install ;;
     update) cmd_update ;;
@@ -1451,33 +1477,9 @@ pvs_main() {
 # ---------------------------------------------------------------------------
 # Service hooks
 # ---------------------------------------------------------------------------
-svc_parse_option() {
-  case "$1" in
-    --dbpassword)
-      [[ -n "${2:-}" ]] || die "--dbpassword needs a value"
-      v_password "$2" || die "--dbpassword must be at least 8 characters"
-      DBPASSWORD="$2"; SVC_OPT_SHIFT=2; return 0 ;;
-  esac
-  return 1
-}
-
-svc_install_args() {
-  [[ -n "$DBPASSWORD" ]] || DBPASSWORD="$(generate_password)"
-  SVC_INSTALL_ARGS=(--dbpassword "$DBPASSWORD")
-}
-
-svc_plan_lines() {
-  if [[ -n "$DBPASSWORD" ]]; then
-    echo " DB password   : (as entered, hidden)"
-  else
-    echo " DB password   : (auto-generated, shown once after creation)"
-  fi
-}
-
 svc_summary_lines() {
-  echo " Connect       : mariadb -h ${2} -u root -p"
-  echo " DB password   : ${DBPASSWORD}"
-  echo " Port          : ${2}:3306"
+  echo " Admin UI      : http://${2}:81"
+  echo " First visit   : complete the setup screen to create your admin account"
 }
 
 pvs_main "$@"

@@ -871,7 +871,44 @@ create_container() {
       --password "$ROOT_PASSWORD" \
       --onboot 1 \
       --start 0
+  # Between `pct create` (container exists, stopped) and `pct start` below —
+  # the two lines this appends only take effect from a container's next
+  # start, so applying them here means the very first start already has
+  # working TUN access, no separate restart needed the way a repair on an
+  # already-running container (see ensure_tun_device) does.
+  if [[ "${NEEDS_TUN:-0}" -eq 1 ]]; then
+    run_step "enabling TUN device passthrough" enable_tun_device "$ctid"
+  fi
   run_step "starting container ${ctid}" pct start "$ctid"
+}
+
+# A VPN client or server needs to create a `tun` network interface, which an
+# unprivileged LXC container has no access to by default — unlike nesting or
+# keyctl, Proxmox's own `--features` flag has no toggle for this at all.
+# These two lines (cgroup device passthrough + a bind-mounted device node)
+# are the documented, working fix for unprivileged containers specifically —
+# confirmed on a real host, not just from a forum post, before trusting it
+# for Tailscale/WireGuard. `major 10, minor 200` is the kernel's own fixed
+# device number for `/dev/net/tun`, not something this project chose.
+enable_tun_device() {
+  local ctid="$1" conf="/etc/pve/lxc/${1}.conf"
+  {
+    printf 'lxc.cgroup2.devices.allow: c 10:200 rwm\n'
+    printf 'lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file\n'
+  } >> "$conf"
+}
+
+# Repairs a container made before a service started requesting
+# DEFAULT_NEEDS_TUN, the same spirit as enable_root_ssh's defensive
+# re-application from `update` — idempotent (checks before appending), and
+# unlike the create-time path above, the container is already running here,
+# so the config change needs an actual stop/start to take effect at all.
+ensure_tun_device() {
+  local ctid="$1" conf="/etc/pve/lxc/${1}.conf"
+  grep -q '^lxc.mount.entry: /dev/net/tun ' "$conf" 2>/dev/null && return 0
+  enable_tun_device "$ctid"
+  pct stop "$ctid" >/dev/null 2>&1 || true
+  pct start "$ctid"
 }
 # lib/prompt.sh — interactive configuration. Every prompt offers the
 # recommended value in brackets, so Enter is always a valid answer.
@@ -1121,6 +1158,10 @@ NESTING="${DEFAULT_NESTING:-0}"
 # PVE host) with this exact pair; nesting alone was not tested in isolation, so
 # services that need Docker should request both rather than assume nesting suffices.
 KEYCTL="${DEFAULT_KEYCTL:-0}"
+# A VPN client/server needs to create a `tun` interface — unprivileged LXCs
+# have no access to /dev/net/tun by default, and unlike nesting/keyctl this
+# has no --features toggle at all; see enable_tun_device in lib/pve.sh.
+NEEDS_TUN="${DEFAULT_NEEDS_TUN:-0}"
 STATIC_CIDR=""
 GATEWAY=""
 TEMPLATE=""
@@ -1406,6 +1447,10 @@ do_manage() {
     # container's existing one keeps working, it just starts working over
     # SSH too.
     enable_root_ssh "$ctid" "$(detect_os_id "$ctid")" 2>/dev/null || true
+    # Same repair spirit, for a container made before this service started
+    # requesting DEFAULT_NEEDS_TUN — idempotent, no-ops if the passthrough
+    # is already there.
+    [[ "$NEEDS_TUN" -eq 1 ]] && { ensure_tun_device "$ctid" 2>/dev/null || true; }
   fi
   pct_exec_manage "$ctid" "$action" "$@"
 }

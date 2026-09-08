@@ -1,141 +1,171 @@
 #!/usr/bin/env bash
 #
-# mariadb-docker-lxc.sh — MariaDB via Docker on Proxmox VE, create to
-# teardown. Run this on a PVE host, as root.
+# traefik-lxc.sh — Traefik reverse proxy on Proxmox VE, create to teardown.
+# Run this on a PVE host, as root.
 #
-# This is the Docker counterpart to ct-lxc/mariadb-lxc.sh, which installs
-# MariaDB natively from Debian's own repository. Same database, different
-# packaging — pick this one for pull-based updates and the official image.
+# Traefik has no official apt package or install script — its only official
+# non-Docker distribution is a static binary published on GitHub Releases
+# (checked directly: amd64/arm64/armv7 builds exist for every release). This
+# script downloads the latest one and runs it under a systemd unit this
+# project writes itself, the same shape this project already uses when a
+# vendor genuinely ships no packaging of its own.
 #
-#   create              Create a Debian LXC with Docker inside it, then run
-#                       the official mariadb image
-#   update <ctid>       mysqldump backup, `docker compose pull && up -d`,
-#                       verify it's back up and answering — restores the
-#                       dump and reports if not
-#   uninstall <ctid>    Back up (unless --purge), `docker compose down`
-#                       (--purge also removes the data and backups)
-#   status <ctid>       Show container status and readiness
+#   create              Create a Debian LXC and install the latest Traefik
+#                       release binary
+#   update <ctid>       Back up config, re-fetch the latest release,
+#                       restart, verify the dashboard answers — restores
+#                       the backup and reports if not
+#   uninstall <ctid>    Stop and remove the binary/service (config and any
+#                       ACME certificates kept on disk). --purge also drops
+#                       those and backups
+#   status <ctid>       Show service state and whether Traefik answers
 #
 # Usage:
-#   ./mariadb-docker-lxc.sh create [options]
-#   ./mariadb-docker-lxc.sh update <ctid>
-#   ./mariadb-docker-lxc.sh uninstall <ctid> [--purge]
-#   ./mariadb-docker-lxc.sh status <ctid>
+#   ./traefik-lxc.sh create [options]
+#   ./traefik-lxc.sh update <ctid>
+#   ./traefik-lxc.sh uninstall <ctid> [--purge]
+#   ./traefik-lxc.sh status <ctid>
 #
 # create options:
 #   -y, --defaults         Skip the questions and use the recommended values
 #   -i, --id <id>          Container ID (default: next free ID)
-#   -n, --hostname <name>  Container hostname (default: mariadb-docker)
+#   -n, --hostname <name>  Container hostname (default: traefik)
 #   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
 #   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
 #   -b, --bridge <name>    Network bridge (default: vmbr0)
-#   -d, --disk <GB>        Disk size in GB (default: 4)
+#   -d, --disk <GB>        Disk size in GB (default: 2)
 #   -c, --cores <n>        CPU cores (default: 1)
-#   -m, --memory <MB>      RAM in MB (default: 1024)
-#   --static <cidr>        Static IP, e.g. 192.168.1.55/24 (default: dhcp)
+#   -m, --memory <MB>      RAM in MB (default: 512)
+#   --static <cidr>        Static IP, e.g. 192.168.1.62/24 (default: dhcp)
 #   --gateway <ip>         Gateway, required with --static
 #   --password <pass>      Container root password (default: random, shown
 #                           once after creation)
-#   --dbpassword <pass>    Password for the database `root` account (default:
-#                           random, shown once after creation, min 8
-#                           characters)
 #
-# Same network trade-off as the native script: the container publishes 3306
-# on all interfaces, reachable from your LAN with the printed password.
+# Routes go in /etc/traefik/dynamic.yml on the container (Traefik watches it
+# and reloads automatically — no restart needed) — this script only stands
+# up the proxy itself, not any routes through it, since what you're routing
+# to is entirely yours to define.
 #
-# Debian only, no --os choice: get.docker.com (Docker's own installer) has no
-# Alpine path. This needs internet access from the container to pull the
-# image, and again on every `update`.
+# The dashboard runs in Traefik's own documented "insecure" mode (no auth,
+# HTTP only) on port 8080 — fine on a private LAN, same reasoning this
+# project already applies to root SSH and every database service here; put
+# something in front of it (or a dynamic.yml router with auth middleware)
+# before exposing this beyond your LAN.
+#
+# Run with no options on a terminal and it asks about each setting, showing
+# the recommended value in brackets — Enter accepts it. Pass any option (or
+# -y) and it runs straight through without asking, so scripts stay
+# predictable.
+#
+# A reverse proxy wants a fixed address — it's the front door every other
+# service on your LAN would point at. Static IP is recommended.
+#
+# Debian only — no Alpine path: the systemd unit this writes has no OpenRC
+# equivalent here yet.
 #
 # ---------------------------------------------------------------------------
 # GENERATED FILE - DO NOT EDIT.
-# Built by build.sh from src/ct-lxc/mariadb-docker/main.sh and src/lib/*.sh.
+# Built by build.sh from src/ct-lxc/traefik/main.sh and src/lib/*.sh.
 # Edit the source, then run ./build.sh. See CONTRIBUTING.md.
 # ---------------------------------------------------------------------------
 
-PVS_SCRIPT_FILENAME="mariadb-docker-lxc.sh"
-PVS_SCRIPT_URL="https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/mariadb-docker-lxc.sh"
+PVS_SCRIPT_FILENAME="traefik-lxc.sh"
+PVS_SCRIPT_URL="https://raw.githubusercontent.com/sushilkumarsahani41/proxmox-ve-scripts/main/ct-lxc/traefik-lxc.sh"
 
 set -Eeuo pipefail
 
 # ---------------------------------------------------------------------------
 # Service definition
 # ---------------------------------------------------------------------------
-SERVICE_ID="mariadb-docker"
-SERVICE_NAME="MariaDB (Docker)"
-# @tagline MariaDB via the official Docker image
+SERVICE_ID="traefik"
+SERVICE_NAME="Traefik"
+# @tagline Reverse proxy and load balancer with automatic reloads
 
-DEFAULT_HOSTNAME="mariadb-docker"
-DEFAULT_DISK_GB="4"
+DEFAULT_HOSTNAME="traefik"
+DEFAULT_DISK_GB="2"
 DEFAULT_CORES="1"
-DEFAULT_MEMORY_MB="1024"
+DEFAULT_MEMORY_MB="512"
 DEFAULT_PREFER_STATIC="y"
-DEFAULT_NESTING="1"
-DEFAULT_KEYCTL="1"
-
-DBPASSWORD=""
 
 pvs_usage_text() {
 cat <<'EOF_PVS_USAGE'
 
-mariadb-docker-lxc.sh — MariaDB via Docker on Proxmox VE, create to
-teardown. Run this on a PVE host, as root.
+traefik-lxc.sh — Traefik reverse proxy on Proxmox VE, create to teardown.
+Run this on a PVE host, as root.
 
-This is the Docker counterpart to ct-lxc/mariadb-lxc.sh, which installs
-MariaDB natively from Debian's own repository. Same database, different
-packaging — pick this one for pull-based updates and the official image.
+Traefik has no official apt package or install script — its only official
+non-Docker distribution is a static binary published on GitHub Releases
+(checked directly: amd64/arm64/armv7 builds exist for every release). This
+script downloads the latest one and runs it under a systemd unit this
+project writes itself, the same shape this project already uses when a
+vendor genuinely ships no packaging of its own.
 
-  create              Create a Debian LXC with Docker inside it, then run
-                      the official mariadb image
-  update <ctid>       mysqldump backup, `docker compose pull && up -d`,
-                      verify it's back up and answering — restores the
-                      dump and reports if not
-  uninstall <ctid>    Back up (unless --purge), `docker compose down`
-                      (--purge also removes the data and backups)
-  status <ctid>       Show container status and readiness
+  create              Create a Debian LXC and install the latest Traefik
+                      release binary
+  update <ctid>       Back up config, re-fetch the latest release,
+                      restart, verify the dashboard answers — restores
+                      the backup and reports if not
+  uninstall <ctid>    Stop and remove the binary/service (config and any
+                      ACME certificates kept on disk). --purge also drops
+                      those and backups
+  status <ctid>       Show service state and whether Traefik answers
 
 Usage:
-  ./mariadb-docker-lxc.sh create [options]
-  ./mariadb-docker-lxc.sh update <ctid>
-  ./mariadb-docker-lxc.sh uninstall <ctid> [--purge]
-  ./mariadb-docker-lxc.sh status <ctid>
+  ./traefik-lxc.sh create [options]
+  ./traefik-lxc.sh update <ctid>
+  ./traefik-lxc.sh uninstall <ctid> [--purge]
+  ./traefik-lxc.sh status <ctid>
 
 create options:
   -y, --defaults         Skip the questions and use the recommended values
   -i, --id <id>          Container ID (default: next free ID)
-  -n, --hostname <name>  Container hostname (default: mariadb-docker)
+  -n, --hostname <name>  Container hostname (default: traefik)
   -s, --storage <name>   Storage for the rootfs (default: auto-detected)
   -t, --template-storage <name>  Storage for CT templates (default: auto-detected)
   -b, --bridge <name>    Network bridge (default: vmbr0)
-  -d, --disk <GB>        Disk size in GB (default: 4)
+  -d, --disk <GB>        Disk size in GB (default: 2)
   -c, --cores <n>        CPU cores (default: 1)
-  -m, --memory <MB>      RAM in MB (default: 1024)
-  --static <cidr>        Static IP, e.g. 192.168.1.55/24 (default: dhcp)
+  -m, --memory <MB>      RAM in MB (default: 512)
+  --static <cidr>        Static IP, e.g. 192.168.1.62/24 (default: dhcp)
   --gateway <ip>         Gateway, required with --static
   --password <pass>      Container root password (default: random, shown
                           once after creation)
-  --dbpassword <pass>    Password for the database `root` account (default:
-                          random, shown once after creation, min 8
-                          characters)
 
-Same network trade-off as the native script: the container publishes 3306
-on all interfaces, reachable from your LAN with the printed password.
+Routes go in /etc/traefik/dynamic.yml on the container (Traefik watches it
+and reloads automatically — no restart needed) — this script only stands
+up the proxy itself, not any routes through it, since what you're routing
+to is entirely yours to define.
 
-Debian only, no --os choice: get.docker.com (Docker's own installer) has no
-Alpine path. This needs internet access from the container to pull the
-image, and again on every `update`.
+The dashboard runs in Traefik's own documented "insecure" mode (no auth,
+HTTP only) on port 8080 — fine on a private LAN, same reasoning this
+project already applies to root SSH and every database service here; put
+something in front of it (or a dynamic.yml router with auth middleware)
+before exposing this beyond your LAN.
+
+Run with no options on a terminal and it asks about each setting, showing
+the recommended value in brackets — Enter accepts it. Pass any option (or
+-y) and it runs straight through without asking, so scripts stay
+predictable.
+
+A reverse proxy wants a fixed address — it's the front door every other
+service on your LAN would point at. Static IP is recommended.
+
+Debian only — no Alpine path: the systemd unit this writes has no OpenRC
+equivalent here yet.
 EOF_PVS_USAGE
 }
 manage_script() {
 cat <<'EOF_MANAGE_SCRIPT'
 #!/usr/bin/env bash
-# In-container management for MariaDB (Docker). Pushed to
-# /usr/local/sbin/mariadb-docker-manage.sh and re-pushed on every command, so
-# the container always matches the host script's version.
+# In-container management for Traefik. Pushed to
+# /usr/local/sbin/traefik-manage.sh and re-pushed on every command, so the
+# container always matches the host script's version.
 #
-# Delegates to the official mariadb image and `docker compose` for
-# everything — the same principle as this project's native MariaDB script,
-# applied to a vendor *image* instead of a vendor *package*.
+# Traefik ships no apt package and no install script — its only official
+# non-Docker artifact is the binary tarball on GitHub Releases (verified
+# directly against a real release's asset list: amd64/arm64/armv7 builds
+# exist for every version, not assumed). This project writes the systemd
+# unit itself, the same as any vendor that ships a binary but no packaging.
 set -Eeuo pipefail
 
 # lib/agent-ui.sh — the small preamble every in-container management script
@@ -222,38 +252,110 @@ ensure_docker() {
   command -v docker >/dev/null 2>&1 || die "Docker installer finished but 'docker' is still not on PATH"
 }
 
-APP_DIR="/opt/mariadb-docker"
-COMPOSE_FILE="${APP_DIR}/compose.yaml"
-DATA_DIR="${APP_DIR}/data"
-BACKUP_ROOT="/var/backups/mariadb-docker"
-DBPASSWORD=""
+BIN="/usr/local/bin/traefik"
+CONF_DIR="/etc/traefik"
+STATIC_CONF="${CONF_DIR}/traefik.yml"
+DYNAMIC_CONF="${CONF_DIR}/dynamic.yml"
+DATA_DIR="/var/lib/traefik"
+UNIT="/etc/systemd/system/traefik.service"
+BACKUP_ROOT="/var/backups/traefik-lxc"
 PURGE=0
 
-is_installed() { [[ -f "$COMPOSE_FILE" ]]; }
+is_installed() { [[ -x "$BIN" ]]; }
 has_data() {
   { [[ -d "$BACKUP_ROOT" ]] && [[ -n "$(ls -A "$BACKUP_ROOT" 2>/dev/null)" ]]; } \
-    || { [[ -d "$DATA_DIR" ]] && [[ -n "$(ls -A "$DATA_DIR" 2>/dev/null)" ]]; }
+    || { [[ -d "$CONF_DIR" ]] && [[ -n "$(ls -A "$CONF_DIR" 2>/dev/null)" ]]; }
 }
 
-docker_compose() { ( cd "$APP_DIR" && docker compose "$@" ); }
+arch_asset() {
+  case "$(dpkg --print-architecture)" in
+    amd64) echo "amd64" ;;
+    arm64) echo "arm64" ;;
+    armhf) echo "armv7" ;;
+    *) die "Traefik has no published build for architecture '$(dpkg --print-architecture)'" ;;
+  esac
+}
 
-write_compose_file() {
-  mkdir -p "$APP_DIR" "$DATA_DIR"
-  cat > "$COMPOSE_FILE" <<EOF
-services:
-  mariadb:
-    image: mariadb:11
-    restart: unless-stopped
-    ports:
-      - "3306:3306"
-    environment:
-      MARIADB_ROOT_PASSWORD: ${DBPASSWORD}
-    volumes:
-      - ${DATA_DIR}:/var/lib/mysql
+latest_release_tag() {
+  curl -fsSL https://api.github.com/repos/traefik/traefik/releases/latest \
+    | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1
+}
+
+install_traefik_binary() {
+  local tag arch url tmp_dir
+  tag="$(latest_release_tag)"
+  [[ -n "$tag" ]] || die "couldn't determine Traefik's latest release — check network access to api.github.com"
+  arch="$(arch_asset)"
+  url="https://github.com/traefik/traefik/releases/download/${tag}/traefik_${tag}_linux_${arch}.tar.gz"
+  tmp_dir="$(mktemp -d)"
+  curl -fsSL "$url" -o "${tmp_dir}/traefik.tar.gz" || { rm -rf "$tmp_dir"; die "failed to download Traefik ${tag} for linux_${arch}"; }
+  tar -xzf "${tmp_dir}/traefik.tar.gz" -C "$tmp_dir" traefik || { rm -rf "$tmp_dir"; die "downloaded archive did not contain a traefik binary"; }
+  install -m 755 "${tmp_dir}/traefik" "$BIN"
+  rm -rf "$tmp_dir"
+}
+
+write_config() {
+  mkdir -p "$CONF_DIR" "$DATA_DIR"
+  if [[ ! -f "$STATIC_CONF" ]]; then
+    cat > "$STATIC_CONF" <<EOF
+entryPoints:
+  web:
+    address: ":80"
+
+api:
+  dashboard: true
+  insecure: true
+
+ping: {}
+
+providers:
+  file:
+    filename: ${DYNAMIC_CONF}
+    watch: true
+
+log:
+  level: INFO
 EOF
+  fi
+  if [[ ! -f "$DYNAMIC_CONF" ]]; then
+    cat > "$DYNAMIC_CONF" <<'EOF'
+# Traefik watches this file and reloads automatically — no restart needed.
+# Example:
+#
+# http:
+#   routers:
+#     my-app:
+#       rule: "Host(`app.example.com`)"
+#       service: my-app
+#   services:
+#     my-app:
+#       loadBalancer:
+#         servers:
+#           - url: "http://192.168.1.50:8080"
+http: {}
+EOF
+  fi
 }
 
-service_healthy() { docker_compose exec -T mariadb mariadb-admin ping -uroot -p"${DBPASSWORD}" >/dev/null 2>&1; }
+write_systemd_unit() {
+  cat > "$UNIT" <<EOF
+[Unit]
+Description=Traefik
+After=network.target
+
+[Service]
+ExecStart=${BIN} --configFile=${STATIC_CONF}
+WorkingDirectory=${CONF_DIR}
+Restart=on-failure
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+}
+
+service_healthy() { curl -fsS "http://localhost:8080/ping" 2>/dev/null | grep -q '^OK$'; }
 
 wait_for_service() {
   local tries=30
@@ -268,64 +370,61 @@ wait_for_service() {
 backup_state() {
   local backup_dir="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$backup_dir"
-  docker_compose exec -T mariadb mariadb-dump -uroot -p"${DBPASSWORD}" --all-databases \
-    > "${backup_dir}/dump.sql" 2>/dev/null || true
+  [[ -d "$CONF_DIR" ]] && cp -a "$CONF_DIR" "${backup_dir}/traefik-etc"
+  [[ -d "$DATA_DIR" ]] && cp -a "$DATA_DIR" "${backup_dir}/traefik-lib"
   echo "$backup_dir"
 }
 
 restore_state() {
   local backup_dir="$1"
-  [[ -f "${backup_dir}/dump.sql" ]] || return 0
-  docker_compose exec -T mariadb mariadb -uroot -p"${DBPASSWORD}" < "${backup_dir}/dump.sql" >/dev/null 2>&1 || true
+  [[ -d "${backup_dir}/traefik-etc" ]] && { rm -rf "$CONF_DIR"; cp -a "${backup_dir}/traefik-etc" "$CONF_DIR"; }
+  [[ -d "${backup_dir}/traefik-lib" ]] && { rm -rf "$DATA_DIR"; cp -a "${backup_dir}/traefik-lib" "$DATA_DIR"; }
 }
 
 print_access_info() {
   echo
-  ok "MariaDB: mariadb -h $(container_ip) -u root -p"
+  ok "Traefik dashboard: http://$(container_ip):8080/dashboard/"
 }
 
 cmd_install() {
   require_root
-  ensure_docker
-  is_installed && die "MariaDB (Docker) is already installed — use 'update' instead"
+  is_installed && die "Traefik is already installed — use 'update' instead"
 
-  write_compose_file
-  docker_compose up -d || die "docker compose up failed — see: docker compose -f ${COMPOSE_FILE} logs"
+  ensure_pkg curl
+  install_traefik_binary
+  write_config
+  write_systemd_unit
 
-  if ! wait_for_service; then
-    warn "MariaDB did not become healthy within the expected time"
-    docker_compose ps >&2 || true
-    die "install did not verify healthy — check: docker compose -f ${COMPOSE_FILE} logs"
-  fi
+  systemctl enable --now traefik >/dev/null 2>&1 \
+    || die "traefik.service failed to start — check: journalctl -u traefik"
 
-  ok "MariaDB (Docker) installed"
+  wait_for_service || die "Traefik did not come up healthy after install — check: journalctl -u traefik"
+
+  ok "Traefik installed"
   print_access_info
 }
 
 cmd_update() {
   require_root
-  is_installed || die "MariaDB (Docker) is not installed — use 'install' instead"
+  is_installed || die "Traefik is not installed — use 'install' instead"
 
   local backup_dir
   backup_dir="$(backup_state)"
-  ok "backed up all databases to ${backup_dir}/dump.sql"
+  ok "backed up config to ${backup_dir}"
 
-  if ! docker_compose pull; then
-    warn "docker compose pull failed — leaving the running container untouched"
-    die "update failed, nothing was changed"
-  fi
+  # install_traefik_binary dies with its own specific message (bad network,
+  # no release found, unsupported arch) on failure — nothing left to add by
+  # wrapping this in another die, and the existing binary/service is
+  # untouched either way since nothing below has run yet.
+  install_traefik_binary
 
-  if ! docker_compose up -d; then
-    warn "docker compose up failed after pulling the new image — restoring data from backup"
-    restore_state "$backup_dir"
-    die "update failed, data restored from ${backup_dir}/dump.sql — check: docker compose -f ${COMPOSE_FILE} logs"
-  fi
+  systemctl restart traefik 2>/dev/null || true
 
   if ! wait_for_service; then
-    warn "MariaDB did not come back up healthy after the update — restoring data from backup"
+    warn "Traefik did not come back up healthy after the update — restoring config from backup"
     restore_state "$backup_dir"
-    docker_compose up -d >/dev/null 2>&1 || true
-    die "update failed, data restored from ${backup_dir}/dump.sql — the image itself is not rolled back by this; check: docker compose -f ${COMPOSE_FILE} logs"
+    systemctl restart traefik 2>/dev/null || true
+    die "update failed, config restored from ${backup_dir} — the binary itself is not rolled back by this; check: journalctl -u traefik"
   fi
 
   ok "updated"
@@ -335,38 +434,38 @@ cmd_update() {
 cmd_uninstall() {
   require_root
   if ! is_installed && ! has_data; then
-    die "MariaDB (Docker) is not installed and there is no backed-up data to remove"
+    die "Traefik is not installed and there is no backed-up data to remove"
   fi
 
+  local backup_dir=""
   if is_installed; then
-    local backup_dir=""
     if [[ "$PURGE" -eq 0 ]]; then
       backup_dir="$(backup_state)"
     fi
-    docker_compose down >/dev/null 2>&1 || warn "docker compose down reported an issue — continuing"
-    rm -f "$COMPOSE_FILE"
-    rm -rf "$DATA_DIR"
-    if [[ -n "$backup_dir" ]]; then
-      ok "MariaDB (Docker) removed, data kept at ${backup_dir}"
-    else
-      ok "MariaDB (Docker) removed"
-    fi
-  elif [[ -d "$DATA_DIR" ]]; then
-    rm -rf "$DATA_DIR"
+    systemctl disable --now traefik >/dev/null 2>&1 || true
+    rm -f "$BIN" "$UNIT"
+    systemctl daemon-reload
   fi
 
+  # Not gated on is_installed: a previous plain uninstall already removed
+  # the binary (is_installed is now false) but deliberately left config/data
+  # on disk — a later --purge has to reach this regardless.
   if [[ "$PURGE" -eq 1 ]]; then
-    rm -rf "$BACKUP_ROOT"
-    ok "all backed-up data removed"
+    rm -rf "$CONF_DIR" "$DATA_DIR" "$BACKUP_ROOT"
+    ok "Traefik removed"
+  elif [[ -n "$backup_dir" ]]; then
+    ok "Traefik removed, config kept at ${CONF_DIR}, backed up to ${backup_dir}"
+  else
+    ok "Traefik was already not installed; nothing further to remove"
   fi
 }
 
 cmd_status() {
-  is_installed || die "MariaDB (Docker) is not installed"
-  echo "service:  $(service_healthy && echo running || echo unhealthy)"
-  echo "address:  $(container_ip):3306"
+  is_installed || die "Traefik is not installed"
+  echo "service:  $(systemctl is-active traefik 2>/dev/null || echo unknown)"
+  echo "address:  http://$(container_ip):8080/dashboard/"
   echo
-  docker_compose ps 2>&1 || true
+  command -v ss >/dev/null 2>&1 && { ss -ltnp 2>/dev/null | grep -E ':(80|8080)\b' || true; }
 }
 
 main() {
@@ -374,14 +473,10 @@ main() {
   if [[ -n "$cmd" ]]; then shift; fi
   while (( "$#" )); do
     case "$1" in
-      --dbpassword) DBPASSWORD="$2"; shift 2 ;;
       --purge) PURGE=1; shift ;;
       *) die "unknown option: $1" ;;
     esac
   done
-  if [[ -z "$DBPASSWORD" ]] && [[ -f "$COMPOSE_FILE" ]]; then
-    DBPASSWORD="$(sed -n 's/^\s*MARIADB_ROOT_PASSWORD:\s*//p' "$COMPOSE_FILE" | head -n1)"
-  fi
   case "$cmd" in
     install) cmd_install ;;
     update) cmd_update ;;
@@ -1451,33 +1546,9 @@ pvs_main() {
 # ---------------------------------------------------------------------------
 # Service hooks
 # ---------------------------------------------------------------------------
-svc_parse_option() {
-  case "$1" in
-    --dbpassword)
-      [[ -n "${2:-}" ]] || die "--dbpassword needs a value"
-      v_password "$2" || die "--dbpassword must be at least 8 characters"
-      DBPASSWORD="$2"; SVC_OPT_SHIFT=2; return 0 ;;
-  esac
-  return 1
-}
-
-svc_install_args() {
-  [[ -n "$DBPASSWORD" ]] || DBPASSWORD="$(generate_password)"
-  SVC_INSTALL_ARGS=(--dbpassword "$DBPASSWORD")
-}
-
-svc_plan_lines() {
-  if [[ -n "$DBPASSWORD" ]]; then
-    echo " DB password   : (as entered, hidden)"
-  else
-    echo " DB password   : (auto-generated, shown once after creation)"
-  fi
-}
-
 svc_summary_lines() {
-  echo " Connect       : mariadb -h ${2} -u root -p"
-  echo " DB password   : ${DBPASSWORD}"
-  echo " Port          : ${2}:3306"
+  echo " Dashboard     : http://${2}:8080/dashboard/"
+  echo " Routes go in  : /etc/traefik/dynamic.yml (watched, no restart needed)"
 }
 
 pvs_main "$@"
