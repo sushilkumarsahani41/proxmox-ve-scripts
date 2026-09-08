@@ -27,6 +27,7 @@ mariadb-docker|MariaDB (Docker)|MariaDB via the official Docker image|ct-lxc/mar
 mariadb|MariaDB|The community-developed fork of MySQL|ct-lxc/mariadb-lxc.sh|
 mongodb-docker|MongoDB (Docker)|MongoDB via the official Docker image|ct-lxc/mongodb-docker-lxc.sh|
 mongodb|MongoDB|The document database (Debian 12 + amd64 only)|ct-lxc/mongodb-lxc.sh|
+nginx-proxy-manager|Nginx Proxy Manager|Reverse proxy admin UI with free Let's Encrypt certificates|ct-lxc/nginx-proxy-manager-lxc.sh|
 pi-hole-docker|Pi-hole (Docker)|Pi-hole via the official Docker image|ct-lxc/pi-hole-docker-lxc.sh|
 pi-hole|Pi-hole|The original network-wide DNS ad blocker|ct-lxc/pi-hole-lxc.sh|
 plex-docker|Plex (Docker)|Plex via the official Docker image|ct-lxc/plex-docker-lxc.sh|
@@ -35,8 +36,13 @@ postgresql-docker|PostgreSQL (Docker)|PostgreSQL via the official Docker image|c
 postgresql|PostgreSQL|The advanced open-source relational database|ct-lxc/postgresql-lxc.sh|
 sharkshell-docker|SharkShell (Docker)|SharkShell via the official Docker image|ct-lxc/sharkshell-docker-lxc.sh|
 sharkshell|SharkShell|Self-hosted web SSH client with 2FA and an MCP server|ct-lxc/sharkshell-lxc.sh|
+tailscale-docker|Tailscale (Docker)|Tailscale via the official Docker image|ct-lxc/tailscale-docker-lxc.sh|
+tailscale|Tailscale|Zero-config mesh VPN, no port-forwarding needed|ct-lxc/tailscale-lxc.sh|
+traefik-docker|Traefik (Docker)|Traefik via the official Docker image|ct-lxc/traefik-docker-lxc.sh|
+traefik|Traefik|Reverse proxy and load balancer with automatic reloads|ct-lxc/traefik-lxc.sh|
 valkey-docker|Valkey (Docker)|Valkey via the official Docker image|ct-lxc/valkey-docker-lxc.sh|
 valkey|Valkey|Redis-protocol-compatible in-memory data store|ct-lxc/valkey-lxc.sh|
+wireguard|WireGuard|Fast, modern VPN tunnel|ct-lxc/wireguard-lxc.sh|
 "
 
 if [[ -t 1 ]]; then

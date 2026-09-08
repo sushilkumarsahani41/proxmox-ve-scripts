@@ -5,10 +5,11 @@
 .Trashes
 
 # Editors
-.vscode/
 .idea/
 *.swp
 
 # Build scratch
 .build-check/
 *.tmp
+config.bat
+node_modules

@@ -35,6 +35,10 @@ NESTING="${DEFAULT_NESTING:-0}"
 # PVE host) with this exact pair; nesting alone was not tested in isolation, so
 # services that need Docker should request both rather than assume nesting suffices.
 KEYCTL="${DEFAULT_KEYCTL:-0}"
+# A VPN client/server needs to create a `tun` interface — unprivileged LXCs
+# have no access to /dev/net/tun by default, and unlike nesting/keyctl this
+# has no --features toggle at all; see enable_tun_device in lib/pve.sh.
+NEEDS_TUN="${DEFAULT_NEEDS_TUN:-0}"
 STATIC_CIDR=""
 GATEWAY=""
 TEMPLATE=""
@@ -320,6 +324,10 @@ do_manage() {
     # container's existing one keeps working, it just starts working over
     # SSH too.
     enable_root_ssh "$ctid" "$(detect_os_id "$ctid")" 2>/dev/null || true
+    # Same repair spirit, for a container made before this service started
+    # requesting DEFAULT_NEEDS_TUN — idempotent, no-ops if the passthrough
+    # is already there.
+    [[ "$NEEDS_TUN" -eq 1 ]] && { ensure_tun_device "$ctid" 2>/dev/null || true; }
   fi
   pct_exec_manage "$ctid" "$action" "$@"
 }

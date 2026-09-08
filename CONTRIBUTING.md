@@ -486,6 +486,89 @@ around) upstream's own mechanism." When a vendor's Docker image and native
 package genuinely don't offer the same automation surface, let the two
 scripts' flags actually differ rather than forcing artificial parity.
 
+## A capability with no `--features` flag: TUN passthrough (WireGuard, Tailscale)
+
+Every capability this project has needed inside an LXC before this
+(nesting, keyctl) had a `pct create --features` toggle. TUN devices don't —
+an unprivileged container has no access to `/dev/net/tun` at all by
+default, and there's no flag for it. The documented, working fix (found via
+real Proxmox forum threads and Tailscale's own docs, then verified on a
+real unprivileged container, not trusted on the strength of either source
+alone) is two lines appended directly to the container's own
+`/etc/pve/lxc/<ctid>.conf`:
+
+```
+lxc.cgroup2.devices.allow: c 10:200 rwm
+lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file
+```
+
+(`10:200` is the kernel's own fixed major/minor device number for
+`/dev/net/tun` — not a value this project chose.)
+
+This needed a new shared mechanism, `DEFAULT_NEEDS_TUN` alongside
+`DEFAULT_NESTING`/`DEFAULT_KEYCTL`, with two functions in `lib/pve.sh`:
+`enable_tun_device` (called from inside `create_container`, between `pct
+create` and `pct start` — the config only takes effect from a container's
+*next* start, so applying it before the very first one means there's never
+a separate restart needed) and `ensure_tun_device` (idempotent, called
+defensively from `update` for a container made before a service requested
+this, the same repair pattern `enable_root_ssh` already established — since
+that container is already running, this one *does* stop/start it).
+
+Verified for real on a genuinely unprivileged Pi container: `/dev/net/tun`
+existed inside the container, `wg0`/`tailscale0` actually came up, and (for
+Tailscale, which needed a live control-server round trip to prove anything)
+`tailscale up` reached `login.tailscale.com` for real and returned a
+genuine auth URL — the practical ceiling of what's verifiable without a
+real account to finish the login.
+
+A Docker-packaged service needing this (`tailscale-docker`) needs the
+passthrough at *two* independent layers: the LXC container itself (the fix
+above) and the Docker container running inside it, which needs its own
+`cap_add: [NET_ADMIN]` and `/dev/net/tun` device entry in the compose file.
+Neither layer substitutes for the other — both are required.
+
+## A vendor with no packaging at all: ship a binary, write the unit yourself (Traefik)
+
+Every native script before Traefik delegated to some vendor-provided
+installer, apt repo, or package. Traefik has none of those — its only
+official non-Docker artifact is a binary tarball on GitHub Releases
+(confirmed against a real release's asset list: `linux_amd64`/`linux_arm64`/
+`linux_armv7` builds exist for every version). When that's genuinely the
+ceiling of what a vendor offers, the pattern is: resolve the latest release
+tag and the right per-arch asset name from the vendor's own release API
+(no hardcoded version, no hardcoded URL shape beyond what their own naming
+convention already is), download and install the binary, and write the
+systemd unit yourself — the same "if you write the service unit yourself,
+you need one" case `_template/main.sh`'s own comments already anticipated
+for the OS-support case, just triggered by packaging instead of by OS.
+
+`update` here re-fetches "latest" unconditionally and reinstalls, the same
+spirit as this project's apt-based updates (which similarly don't check
+"is there really something newer" before running); a redundant reinstall
+of an identical binary is harmless. Don't wrap a helper function that
+already calls `die()` internally in another `if ! fn; then die; fi` at the
+call site — the outer branch can never run, since `die()` exits before
+control returns; either let the inner `die()`'s own message be the whole
+story (what `cmd_install` does here) or have the helper `return` a status
+instead of dying, if the caller genuinely needs to decide what to do next.
+
+## A vendor's own docs can lag its own current behavior (Nginx Proxy Manager)
+
+NPM's own README, and plenty of still-current tutorials, document a fixed
+default login (`admin@example.com` / `changeme`) for first run. A real
+install's database — queried directly, not assumed — had zero rows in its
+`user` table, and that login was rejected by the real API. Current releases
+detect an empty user table and route you through a setup screen to create
+your own first admin account instead, the same shape as Jellyfin/Plex/
+AdGuard Home's first-run flow, not the fixed-credential shape their own
+older docs still describe. The lesson isn't really about NPM specifically:
+a "well-known default" repeated across enough blog posts and even a
+project's own README can still be stale — when a service's docs claim a
+specific credential or endpoint, check it against a real install's actual
+state (a fresh database, a live API call) rather than trusting how widely
+repeated the claim is.
+
 ## House rules
 
 These are the things that make the difference between a script that works on
@@ -541,6 +624,25 @@ your box and one that works on someone else's.
   disables the spinner entirely, so ordinary checks never execute that code.
   `tests/smoke.sh` allocates a real pty for those paths; extend it rather than
   assuming.
+- **`pct exec <ctid> -- <cmd>` doesn't use a login shell's `PATH`.** It's
+  `/sbin:/bin:/usr/sbin:/usr/bin` — confirmed directly on a real container,
+  not assumed — which does **not** include `/usr/local/sbin`, exactly where
+  `push_manage_script` puts every service's manage.sh. If a service
+  documents running its manage.sh directly via `pct exec` (WireGuard's
+  `add-client`/`show-client`/etc. are the first case of this), the doc has
+  to use the full `/usr/local/sbin/<id>-manage.sh` path — the bare filename
+  silently fails with "No such file or directory" from `pct exec` itself,
+  not from anything the script did wrong.
+- **A CLI's own "am I logged in" check is not "is the daemon healthy."**
+  `tailscale status` exits non-zero for a logged-out node, which is a
+  perfectly normal state for a fresh install with no `--authkey` — using it
+  as a Docker healthcheck reported a genuinely-working container as
+  unhealthy the moment it printed a real login URL. `tailscale version`
+  (or, more generally, whatever a vendor's CLI offers that only checks
+  "can I reach the daemon at all") is the actual health signal; don't reach
+  for the most obviously-named status command without checking what it
+  actually returns in the state you expect to be normal, not just the
+  fully-configured state.
 
 ## Testing
 

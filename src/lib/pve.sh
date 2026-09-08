@@ -317,5 +317,42 @@ create_container() {
       --password "$ROOT_PASSWORD" \
       --onboot 1 \
       --start 0
+  # Between `pct create` (container exists, stopped) and `pct start` below —
+  # the two lines this appends only take effect from a container's next
+  # start, so applying them here means the very first start already has
+  # working TUN access, no separate restart needed the way a repair on an
+  # already-running container (see ensure_tun_device) does.
+  if [[ "${NEEDS_TUN:-0}" -eq 1 ]]; then
+    run_step "enabling TUN device passthrough" enable_tun_device "$ctid"
+  fi
   run_step "starting container ${ctid}" pct start "$ctid"
+}
+
+# A VPN client or server needs to create a `tun` network interface, which an
+# unprivileged LXC container has no access to by default — unlike nesting or
+# keyctl, Proxmox's own `--features` flag has no toggle for this at all.
+# These two lines (cgroup device passthrough + a bind-mounted device node)
+# are the documented, working fix for unprivileged containers specifically —
+# confirmed on a real host, not just from a forum post, before trusting it
+# for Tailscale/WireGuard. `major 10, minor 200` is the kernel's own fixed
+# device number for `/dev/net/tun`, not something this project chose.
+enable_tun_device() {
+  local ctid="$1" conf="/etc/pve/lxc/${1}.conf"
+  {
+    printf 'lxc.cgroup2.devices.allow: c 10:200 rwm\n'
+    printf 'lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file\n'
+  } >> "$conf"
+}
+
+# Repairs a container made before a service started requesting
+# DEFAULT_NEEDS_TUN, the same spirit as enable_root_ssh's defensive
+# re-application from `update` — idempotent (checks before appending), and
+# unlike the create-time path above, the container is already running here,
+# so the config change needs an actual stop/start to take effect at all.
+ensure_tun_device() {
+  local ctid="$1" conf="/etc/pve/lxc/${1}.conf"
+  grep -q '^lxc.mount.entry: /dev/net/tun ' "$conf" 2>/dev/null && return 0
+  enable_tun_device "$ctid"
+  pct stop "$ctid" >/dev/null 2>&1 || true
+  pct start "$ctid"
 }

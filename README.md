@@ -145,6 +145,12 @@ Every script takes `--help`.
 | Jellyfin (Docker) | [`jellyfin-docker-lxc.sh`](ct-lxc/jellyfin-docker-lxc.sh) | Same service, the official `jellyfin/jellyfin` image. Media lives at `/opt/jellyfin-docker/media` inside the container — `uninstall`/`--purge` never touch it, only Jellyfin's own config/cache. Debian only. See [Docker-based variants](#docker-based-variants) below. |
 | Plex | [`plex-lxc.sh`](ct-lxc/plex-lxc.sh) | Installed from Plex's own official apt repository. Unlike every other service here, Plex needs a real plex.tv account to finish setup — open the printed URL and sign in there. Debian only, 8GB disk default. |
 | Plex (Docker) | [`plex-docker-lxc.sh`](ct-lxc/plex-docker-lxc.sh) | Same service, the official `plexinc/pms-docker` image. `--claim <token>` (from https://plex.tv/claim, valid ~4 minutes) auto-signs the server in on first boot — not offered in the interactive wizard, since the token would likely expire before the rest of the questions are answered. Media lives at `/opt/plex-docker/media` — never touched by `uninstall`/`--purge`, same as Jellyfin's. Debian only. See [Docker-based variants](#docker-based-variants) below. |
+| WireGuard | [`wireguard-lxc.sh`](ct-lxc/wireguard-lxc.sh) | VPN server, installed from Debian's own `wireguard-tools` package. Creates one client (`peer1`) on install; `add-client`/`remove-client`/`list-clients`/`show-client` (the last prints a scannable QR code) are ongoing commands run against the container itself, not create-time flags — see [TUN device passthrough](#tun-device-passthrough-wireguard-and-tailscale) below. Debian only, no Docker variant (no official image exists). |
+| Tailscale | [`tailscale-lxc.sh`](ct-lxc/tailscale-lxc.sh) | Mesh VPN, installed via Tailscale's own official install script. `--authkey <key>` (from https://login.tailscale.com/admin/settings/keys) joins the tailnet automatically — unlike Plex's claim token these are valid for days, not minutes, but it's still a flag rather than a wizard question for consistency. See [TUN device passthrough](#tun-device-passthrough-wireguard-and-tailscale) below. Debian only. |
+| Tailscale (Docker) | [`tailscale-docker-lxc.sh`](ct-lxc/tailscale-docker-lxc.sh) | Same service, the official `tailscale/tailscale` image. `--claim`-style `--authkey` flag, same as native. Needs TUN passthrough at two layers — the LXC itself and the Docker container inside it — both handled automatically. Debian only. See [Docker-based variants](#docker-based-variants) below. |
+| Traefik | [`traefik-lxc.sh`](ct-lxc/traefik-lxc.sh) | Reverse proxy with automatic config reloads. No apt package or install script exists upstream — this downloads the latest official GitHub release binary and runs it under a systemd unit this project writes itself. Dashboard runs in Traefik's own documented "insecure" (no-auth) mode — fine on a LAN, same trade-off as every database service here. Debian only. |
+| Traefik (Docker) | [`traefik-docker-lxc.sh`](ct-lxc/traefik-docker-lxc.sh) | Same service, the official `traefik` image (a genuine Docker Official Image). Debian only. See [Docker-based variants](#docker-based-variants) below. |
+| Nginx Proxy Manager | [`nginx-proxy-manager-lxc.sh`](ct-lxc/nginx-proxy-manager-lxc.sh) | Reverse proxy with a web admin UI and free Let's Encrypt certificates. Docker-only, the same shape as Floci — the project ships no apt package, install script, or any documented non-Docker path at all. First-run setup happens through its own web UI (current releases no longer seed a fixed default login — checked directly against a fresh install's database, not old tutorials). |
 
 ### Virtual machines — [`vm/`](vm/)
 
@@ -306,12 +312,15 @@ the URL the summary prints and complete it there.
 ## Docker-based variants
 
 AdGuard Home, Pi-hole, SharkShell, PostgreSQL, MariaDB, Valkey, MongoDB,
-Jellyfin, and Plex each have a second script, suffixed `-docker`, that runs
-the same service as an official Docker image via `docker compose` instead
-of the native/source install the plain script does. Same lifecycle
-(`create`/`update`/`status`/`uninstall`), same shared root-SSH and
-manage.sh machinery — the only thing that changes is what's installed
-inside the container:
+Jellyfin, Plex, Tailscale, and Traefik each have a second script, suffixed
+`-docker`, that runs the same service as an official Docker image via
+`docker compose` instead of the native/source install the plain script
+does. Same lifecycle (`create`/`update`/`status`/`uninstall`), same shared
+root-SSH and manage.sh machinery — the only thing that changes is what's
+installed inside the container. (WireGuard and Nginx Proxy Manager are the
+two exceptions: WireGuard has no official Docker image to point at, and
+Nginx Proxy Manager has no official non-Docker install at all — see their
+own rows in the table above.)
 
 | | Native | Docker |
 |---|---|---|
@@ -352,6 +361,31 @@ containers, not by inspection:
   a confusing warning). Fixed by checking the package's actual `Status`
   field for `install ok installed` instead.
 
+## TUN device passthrough (WireGuard and Tailscale)
+
+Both of these need to create a `tun` network interface, and an unprivileged
+LXC container has no access to `/dev/net/tun` by default — unlike Docker,
+Proxmox's own `--features` flag on `pct create` has no toggle for this at
+all. `wireguard-lxc.sh`, `tailscale-lxc.sh`, and `tailscale-docker-lxc.sh`
+all handle it automatically: two lines appended to the container's own
+`/etc/pve/lxc/<ctid>.conf` (`lxc.cgroup2.devices.allow` for the device's
+major/minor number, `lxc.mount.entry` to actually bind-mount the device
+node in) right after `pct create` and before the container's first start,
+so it works from the very first boot rather than needing a restart. A
+container made before a service requested this gets the same fix applied
+defensively from `update`, the same pattern as the root-SSH fix.
+
+Tailscale's Docker variant needs this at two separate layers — the LXC
+container itself (the same fix as above) and the Docker container running
+inside it (`cap_add: [NET_ADMIN]` plus its own `/dev/net/tun` device entry
+in the compose file) — neither one substitutes for the other. Verified for
+real on a genuinely unprivileged container: the interface came up, `wg
+show`/`tailscale status` reported real state, and — since no test Tailscale
+account was available to complete a real login — `tailscale up` was
+confirmed reaching Tailscale's actual coordination server and returning a
+genuine `login.tailscale.com` URL, the practical limit of what's checkable
+without a browser.
+
 ## Databases: open by design
 
 PostgreSQL, MariaDB, and Valkey (native and Docker alike) all ship, out of
@@ -379,9 +413,12 @@ first init, so this script simply always sets both.
 `ct-lxc/mariadb-docker-lxc.sh`, `ct-lxc/valkey-lxc.sh`,
 `ct-lxc/valkey-docker-lxc.sh`, `ct-lxc/mongodb-docker-lxc.sh`,
 `ct-lxc/jellyfin-lxc.sh`, `ct-lxc/jellyfin-docker-lxc.sh`,
-`ct-lxc/plex-lxc.sh`, and `ct-lxc/plex-docker-lxc.sh` were verified
-end-to-end — create, status, update, uninstall, uninstall --purge, and the
-failure paths — on:
+`ct-lxc/plex-lxc.sh`, `ct-lxc/plex-docker-lxc.sh`,
+`ct-lxc/wireguard-lxc.sh`, `ct-lxc/traefik-lxc.sh`,
+`ct-lxc/traefik-docker-lxc.sh`, `ct-lxc/tailscale-lxc.sh`,
+`ct-lxc/tailscale-docker-lxc.sh`, and `ct-lxc/nginx-proxy-manager-lxc.sh`
+were verified end-to-end — create, status, update, uninstall, uninstall
+--purge, and the failure paths — on:
 
 | | |
 |---|---|
@@ -450,6 +487,34 @@ was checked directly — a real `<MediaContainer>` response with a genuine
 shipped, not just an HTTP 200 — and the same media-directory proof used for
 Jellyfin was repeated for `/opt/plex-docker/media`: a file written before
 `uninstall`, confirmed unchanged after `uninstall --purge`.
+
+Three more real bugs surfaced by testing this batch on the Pi, all fixed
+before shipping:
+
+- **`pct exec <ctid> -- <servicename>-manage.sh <cmd>` doesn't work** — only
+  `wireguard-lxc.sh` documents any manage.sh subcommand meant to be run
+  directly (`add-client`, `show-client`, etc.), and its first draft did so
+  with the bare filename. `pct exec`'s own `PATH` (`/sbin:/bin:/usr/sbin:
+  /usr/bin`, confirmed by checking it directly on a real container) doesn't
+  include `/usr/local/sbin`, where this project's `push_manage_script`
+  actually puts it — every reference now uses the full
+  `/usr/local/sbin/wireguard-manage.sh` path.
+- **`tailscale status` exits non-zero for a logged-out node** — a perfectly
+  healthy state for a fresh install with no `--authkey`, not a failure.
+  `tailscale-docker-lxc.sh`'s first cut used it as the health check and
+  reported a genuinely-working install as unhealthy the moment it printed a
+  real login URL. Fixed with `tailscale version` instead, which only proves
+  the CLI can reach the daemon, independent of tailnet login state — the
+  native script's own `systemctl is-active tailscaled` check never had this
+  problem, since it checks the service, not the login state.
+- **Nginx Proxy Manager no longer ships a default admin login.** Its own
+  README and plenty of still-current tutorials say `admin@example.com` /
+  `changeme` works on first run; a fresh install's actual database (queried
+  directly) had zero rows in its `user` table, and that login was rejected
+  for real. Current releases detect the empty table and walk you through
+  creating your own first admin account through the web UI instead — this
+  project's docs were fixed to match what a real install does, not what an
+  older version used to do.
 
 ## How this repo is built
 
